@@ -26,5 +26,6 @@ import { JwtCommonModule } from 'src/common/jwt.module';
   ],
   controllers: [AuthController],
   providers: [AuthService],
+  exports: [JwtModule],
 })
 export class AuthModule {}

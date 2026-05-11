@@ -2,27 +2,40 @@ import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsDateString, IsOptional } from 'class-validator';
 
 export class IngestMeetingDto {
-  @ApiProperty()
+  @ApiProperty({
+    example: 'Weekly Sync Meeting',
+  })
   @IsString()
   title!: string;
 
-  @ApiProperty()
+  @ApiProperty({
+    example: 'zoom',
+  })
   @IsString()
   platform!: string;
 
-  @ApiProperty()
+  @ApiProperty({
+    example: 'https://zoom.us/j/123456789',
+  })
   @IsString()
   meetingLink!: string;
 
-  @ApiProperty()
+  @ApiProperty({
+    example: '2026-05-06T10:00:00.000Z',
+  })
   @IsDateString()
   startTime!: Date;
 
-  @ApiProperty()
+  @ApiProperty({
+    example: '2026-05-06T11:00:00.000Z',
+  })
   @IsDateString()
   endTime!: Date;
 
-  @ApiProperty({ required: false })
+  @ApiProperty({
+    required: false,
+    example: 'google-event-id-123',
+  })
   @IsOptional()
   @IsString()
   externalEventId?: string;

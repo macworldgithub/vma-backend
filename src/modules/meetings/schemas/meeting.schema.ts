@@ -24,7 +24,13 @@ export class Meeting {
   externalEventId!: string; // calendar event ID
 
   @Prop()
-  source!: string; // calendar | manual | bot
+  source!: string; //  calendar | manual | bot
+
+  @Prop()
+  provider!: string; //  google | zoom | vma
+
+  @Prop()
+  lastSyncedAt!: Date; // NEW
 }
 
 export const MeetingSchema = SchemaFactory.createForClass(Meeting);
