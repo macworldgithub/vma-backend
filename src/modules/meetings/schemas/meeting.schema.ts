@@ -1,21 +1,37 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
+export enum MeetingStatus {
+  SCHEDULED = 'SCHEDULED',
+  LIVE = 'LIVE',
+  ENDED = 'ENDED',
+  CANCELLED = 'CANCELLED',
+}
+
 @Schema({ timestamps: true })
 export class Meeting {
-  @Prop() title!: string;
+  @Prop({ required: true })
+  title!: string;
 
-  @Prop() platform!: string; // teams | zoom | google
+  @Prop({ default: 'vma' })
+  platform!: string; // teams | zoom | google | vma
 
-  @Prop() meetingLink!: string;
+  @Prop()
+  meetingLink!: string;
 
-  @Prop() startTime!: Date;
+  @Prop()
+  startTime!: Date;
 
-  @Prop() endTime!: Date;
+  @Prop()
+  endTime!: Date;
 
-  @Prop({ default: 'SCHEDULED' })
+  @Prop({ type: String, enum: MeetingStatus, default: MeetingStatus.SCHEDULED })
   status!: string;
 
-  @Prop() createdBy!: string; // userId
+  @Prop({ required: true })
+  createdBy!: string; // userId
+
+  @Prop({ required: true })
+  hostId!: string; // userId of meeting host
 
   @Prop([String])
   participants!: string[];
@@ -23,14 +39,34 @@ export class Meeting {
   @Prop()
   externalEventId!: string; // calendar event ID
 
-  @Prop()
-  source!: string; //  calendar | manual | bot
+  @Prop({ default: 'manual' })
+  source!: string; // calendar | manual | bot
+
+  @Prop({ default: 'vma' })
+  provider!: string; // google | zoom | vma
 
   @Prop()
-  provider!: string; //  google | zoom | vma
+  lastSyncedAt!: Date;
+
+  // --- New fields for room linkage ---
 
   @Prop()
-  lastSyncedAt!: Date; // NEW
+  roomId!: string;
+
+  @Prop({ unique: true, sparse: true })
+  meetingCode!: string;
+
+  @Prop()
+  duration?: number; // duration in seconds
+
+  @Prop()
+  actualStartTime?: Date;
+
+  @Prop()
+  actualEndTime?: Date;
+
+  @Prop({ default: 10 })
+  maxParticipants!: number;
 }
 
 export const MeetingSchema = SchemaFactory.createForClass(Meeting);

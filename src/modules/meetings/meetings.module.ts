@@ -16,5 +16,6 @@ import { AuthModule } from '../auth/auth.module';
   ],
   controllers: [MeetingsController],
   providers: [MeetingsService],
+  exports: [MeetingsService],
 })
 export class MeetingsModule {}

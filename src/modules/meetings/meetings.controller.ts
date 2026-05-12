@@ -13,11 +13,17 @@ import {
   ApiOperation,
   ApiBody,
   ApiResponse,
+  ApiParam,
 } from '@nestjs/swagger';
 import { MeetingsService } from './meetings.service';
+import { CreateMeetingDto } from './dto/create-meeting.dto';
 import { IngestMeetingDto } from './dto/ingest-meeting.dto';
-import { RoomService } from '../realtime/services/room.service';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
+import { RolesGuard } from 'src/common/guards/roles.guard';
+import { Roles } from 'src/common/decorators/roles.decorator';
+import { RoomService } from '../realtime/services/room.service';
+import { ChatService } from '../realtime/services/chat.service';
+import { ConfigService } from '@nestjs/config';
 
 @ApiTags('Meetings')
 @ApiBearerAuth()
@@ -26,26 +32,72 @@ export class MeetingsController {
   constructor(
     private service: MeetingsService,
     private roomService: RoomService,
+    private chatService: ChatService,
+    private configService: ConfigService,
   ) {}
 
-  // INGEST MEETING
-  @Post('create')
-  @ApiOperation({ summary: 'Create/Ingest a meeting' })
-  @ApiBody({ type: IngestMeetingDto })
-  @ApiResponse({ status: 201, description: 'Meeting created successfully' })
-  ingest(@Body() dto: IngestMeetingDto, @Req() req: any) {
-    return this.service.ingestMeeting(dto, req.user?.sub);
+  // ─── ICE SERVER CONFIG (for WebRTC) ──────────────────────────────────
+  @Get('ice-servers')
+  @ApiOperation({ summary: 'Get STUN/TURN server configuration for WebRTC' })
+  @ApiResponse({ status: 200, description: 'ICE server configuration' })
+  getIceServers() {
+    const servers: any[] = [];
+
+    const stunUrl = this.configService.get('STUN_URL');
+    if (stunUrl) {
+      servers.push({ urls: stunUrl });
+    }
+
+    const turnUrl = this.configService.get('TURN_URL');
+    if (turnUrl) {
+      servers.push({
+        urls: turnUrl,
+        username: this.configService.get('TURN_USERNAME'),
+        credential: this.configService.get('TURN_PASSWORD'),
+      });
+    }
+
+    // Always include Google STUN as fallback
+    if (servers.length === 0) {
+      servers.push({ urls: 'stun:stun.l.google.com:19302' });
+      servers.push({ urls: 'stun:stun1.l.google.com:19302' });
+    }
+
+    return { iceServers: servers };
   }
 
-  // MY MEETINGS
+  // ─── CREATE MEETING (instant or scheduled) ─────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post('create')
+  @ApiOperation({ summary: 'Create a new meeting (instant or scheduled)' })
+  @ApiBody({ type: CreateMeetingDto })
+  @ApiResponse({ status: 201, description: 'Meeting created with room and join code' })
+  create(@Body() dto: CreateMeetingDto, @Req() req: any) {
+    return this.service.createMeeting(dto, req.user.sub);
+  }
+
+  // ─── INGEST FROM CALENDAR ───────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post('ingest')
+  @ApiOperation({ summary: 'Ingest a meeting from calendar sync' })
+  @ApiBody({ type: IngestMeetingDto })
+  @ApiResponse({ status: 201, description: 'Meeting ingested from calendar' })
+  ingest(@Body() dto: IngestMeetingDto, @Req() req: any) {
+    return this.service.ingestMeeting(dto, req.user.sub);
+  }
+
+  // ─── MY MEETINGS ───────────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
   @Get('my')
   @ApiOperation({ summary: 'Get logged-in user meetings' })
   @ApiResponse({ status: 200, description: 'List of user meetings' })
   getMy(@Req() req: any) {
-    return this.service.getUserMeetings(req.user?.sub);
+    return this.service.getUserMeetings(req.user.sub);
   }
 
-  // ADMIN ALL
+  // ─── ALL MEETINGS (admin) ──────────────────────────────────────────────
+  @UseGuards(JwtGuard, RolesGuard)
+  @Roles('admin')
   @Get('all')
   @ApiOperation({ summary: 'Get all meetings (admin only)' })
   @ApiResponse({ status: 200, description: 'List of all meetings' })
@@ -53,17 +105,78 @@ export class MeetingsController {
     return this.service.getAllMeetings();
   }
 
-  // SINGLE MEETING
+  // ─── JOIN BY CODE (public-ish — for the join page) ─────────────────────
+  @Get('join/:code')
+  @ApiOperation({ summary: 'Get meeting info by join code' })
+  @ApiParam({ name: 'code', example: 'abc-defg-hij' })
+  @ApiResponse({ status: 200, description: 'Meeting info for join page' })
+  async getByCode(@Param('code') code: string) {
+    const meeting = await this.service.getByCode(code);
+    const room = await this.roomService.getRoomByCode(code);
+
+    return {
+      meetingId: (meeting as any)._id,
+      title: meeting.title,
+      hostId: meeting.hostId,
+      status: meeting.status,
+      meetingCode: code,
+      roomId: room?.roomId,
+      roomStatus: room?.status,
+      participantCount: room?.participants?.length || 0,
+      maxParticipants: meeting.maxParticipants,
+    };
+  }
+
+  // ─── START MEETING ─────────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post(':id/start')
+  @ApiOperation({ summary: 'Start a scheduled meeting (host only)' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Meeting started' })
+  start(@Param('id') id: string, @Req() req: any) {
+    return this.service.startMeeting(id, req.user.sub);
+  }
+
+  // ─── END MEETING ──────────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post(':id/end')
+  @ApiOperation({ summary: 'End a live meeting (host only)' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Meeting ended' })
+  end(@Param('id') id: string, @Req() req: any) {
+    return this.service.endMeeting(id, req.user.sub);
+  }
+
+  // ─── GET MEETING WITH LIVE PARTICIPANTS ───────────────────────────────
+  @UseGuards(JwtGuard)
+  @Get(':id/live')
+  @ApiOperation({ summary: 'Get meeting details with live participant data' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Meeting with live participant info' })
+  getLive(@Param('id') id: string) {
+    return this.service.getMeetingWithParticipants(id);
+  }
+
+  // ─── GET CHAT HISTORY ────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Get(':id/chat')
+  @ApiOperation({ summary: 'Get chat history for a meeting' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Chat messages for the meeting' })
+  async getChat(@Param('id') id: string) {
+    const meeting = await this.service.getById(id);
+    if (!meeting.roomId) return { messages: [] };
+    const messages = await this.chatService.getMessages(meeting.roomId);
+    return { messages };
+  }
+
+  // ─── SINGLE MEETING BY ID ────────────────────────────────────────────
+  @UseGuards(JwtGuard)
   @Get(':id')
   @ApiOperation({ summary: 'Get meeting by ID' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
   @ApiResponse({ status: 200, description: 'Single meeting data' })
   getById(@Param('id') id: string) {
     return this.service.getById(id);
-  }
-
-  @UseGuards(JwtGuard)
-  @Post('create-room')
-  createRoom(@Req() req: any) {
-    return this.roomService.createRoom(req.user.sub);
   }
 }

@@ -1,30 +1,187 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { Meeting } from './schemas/meeting.schema';
+import { Meeting, MeetingStatus } from './schemas/meeting.schema';
+import { RoomService } from '../realtime/services/room.service';
+import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class MeetingsService {
-  constructor(@InjectModel(Meeting.name) private model: Model<Meeting>) {}
+  constructor(
+    @InjectModel(Meeting.name) private model: Model<Meeting>,
+    private roomService: RoomService,
+    private configService: ConfigService,
+  ) {}
 
+  /**
+   * Create a new meeting + room (instant or scheduled)
+   */
+  async createMeeting(dto: any, userId: string) {
+    const isInstant = !dto.scheduledStart;
+    const maxParticipants = dto.maxParticipants || 10;
+
+    // 1. Create the meeting record first (to get _id)
+    const meeting = await this.model.create({
+      title: dto.title,
+      platform: 'vma',
+      createdBy: userId,
+      hostId: userId,
+      source: 'manual',
+      provider: 'vma',
+      startTime: dto.scheduledStart ? new Date(dto.scheduledStart) : new Date(),
+      endTime: dto.scheduledEnd ? new Date(dto.scheduledEnd) : undefined,
+      status: isInstant ? MeetingStatus.LIVE : MeetingStatus.SCHEDULED,
+      participants: [userId],
+      maxParticipants,
+      actualStartTime: isInstant ? new Date() : undefined,
+    });
+
+    // 2. Create the room linked to this meeting
+    const room = await this.roomService.createRoom(
+      (meeting as any)._id.toString(),
+      userId,
+      maxParticipants,
+    );
+
+    // 3. Link room back to meeting
+    const frontendUrl = this.configService.get('FRONTEND_URL') || 'http://localhost:3000';
+
+    meeting.roomId = room.roomId;
+    meeting.meetingCode = room.meetingCode;
+    meeting.meetingLink = `${frontendUrl}/meeting/${room.meetingCode}`;
+    await meeting.save();
+
+    return {
+      meeting,
+      roomId: room.roomId,
+      meetingCode: room.meetingCode,
+      joinUrl: meeting.meetingLink,
+    };
+  }
+
+  /**
+   * Start a scheduled meeting (transition SCHEDULED → LIVE)
+   */
+  async startMeeting(meetingId: string, userId: string) {
+    const meeting = await this.model.findById(meetingId);
+
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    if (meeting.hostId !== userId) throw new ForbiddenException('Only the host can start the meeting');
+
+    if (meeting.status !== MeetingStatus.SCHEDULED) {
+      throw new BadRequestException(`Cannot start a meeting with status: ${meeting.status}`);
+    }
+
+    meeting.status = MeetingStatus.LIVE;
+    meeting.actualStartTime = new Date();
+    await meeting.save();
+
+    return meeting;
+  }
+
+  /**
+   * End a live meeting (transition LIVE → ENDED)
+   */
+  async endMeeting(meetingId: string, userId: string) {
+    const meeting = await this.model.findById(meetingId);
+
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    if (meeting.hostId !== userId) throw new ForbiddenException('Only the host can end the meeting');
+
+    if (meeting.status !== MeetingStatus.LIVE) {
+      throw new BadRequestException(`Cannot end a meeting with status: ${meeting.status}`);
+    }
+
+    meeting.status = MeetingStatus.ENDED;
+    meeting.actualEndTime = new Date();
+
+    // Calculate duration in seconds
+    if (meeting.actualStartTime) {
+      meeting.duration = Math.floor(
+        (meeting.actualEndTime.getTime() - meeting.actualStartTime.getTime()) / 1000,
+      );
+    }
+
+    await meeting.save();
+
+    // End the room as well
+    if (meeting.roomId) {
+      try {
+        await this.roomService.endRoom(meeting.roomId, userId);
+      } catch {
+        // Room may already be ended
+      }
+    }
+
+    return meeting;
+  }
+
+  /**
+   * Get meeting by short code (for join page)
+   */
+  async getByCode(meetingCode: string) {
+    const meeting = await this.model.findOne({ meetingCode });
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    return meeting;
+  }
+
+  /**
+   * Get meeting with current participant data from room
+   */
+  async getMeetingWithParticipants(meetingId: string) {
+    const meeting = await this.model.findById(meetingId);
+    if (!meeting) throw new NotFoundException('Meeting not found');
+
+    let participants: any[] = [];
+    if (meeting.roomId) {
+      participants = await this.roomService.getParticipants(meeting.roomId);
+    }
+
+    return {
+      meeting,
+      liveParticipants: participants,
+    };
+  }
+
+  /**
+   * Ingest a meeting from calendar sync (backward compatible)
+   */
   async ingestMeeting(dto: any, userId: string) {
     return this.model.create({
       ...dto,
       createdBy: userId,
-      status: 'SCHEDULED',
+      hostId: userId,
+      status: MeetingStatus.SCHEDULED,
       source: 'calendar',
     });
   }
 
+  /**
+   * Get meetings for a specific user
+   */
   async getUserMeetings(userId: string) {
-    return this.model.find({ createdBy: userId });
+    return this.model.find({
+      $or: [
+        { createdBy: userId },
+        { hostId: userId },
+        { participants: userId },
+      ],
+    }).sort({ startTime: -1 });
   }
 
+  /**
+   * Get all meetings (admin)
+   */
   async getAllMeetings() {
-    return this.model.find();
+    return this.model.find().sort({ startTime: -1 });
   }
 
+  /**
+   * Get single meeting by ID
+   */
   async getById(id: string) {
-    return this.model.findById(id);
+    const meeting = await this.model.findById(id);
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    return meeting;
   }
 }
