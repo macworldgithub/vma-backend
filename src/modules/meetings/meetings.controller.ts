@@ -16,12 +16,17 @@ import {
 } from '@nestjs/swagger';
 import { MeetingsService } from './meetings.service';
 import { IngestMeetingDto } from './dto/ingest-meeting.dto';
+import { RoomService } from '../realtime/services/room.service';
+import { JwtGuard } from 'src/common/guards/jwt.guard';
 
 @ApiTags('Meetings')
 @ApiBearerAuth()
 @Controller('meetings')
 export class MeetingsController {
-  constructor(private service: MeetingsService) {}
+  constructor(
+    private service: MeetingsService,
+    private roomService: RoomService,
+  ) {}
 
   // INGEST MEETING
   @Post('create')
@@ -54,5 +59,11 @@ export class MeetingsController {
   @ApiResponse({ status: 200, description: 'Single meeting data' })
   getById(@Param('id') id: string) {
     return this.service.getById(id);
+  }
+
+  @UseGuards(JwtGuard)
+  @Post('create-room')
+  createRoom(@Req() req: any) {
+    return this.roomService.createRoom(req.user.sub);
   }
 }

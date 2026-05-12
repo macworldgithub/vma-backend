@@ -5,6 +5,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 import { MeetingsModule } from './modules/meetings/meetings.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
 
 
 @Module({
@@ -24,6 +25,7 @@ import { CalendarModule } from './modules/calendar/calendar.module';
     UsersModule,
     MeetingsModule,
     CalendarModule,
+    RealtimeModule,
   ],
 })
 export class AppModule {}
