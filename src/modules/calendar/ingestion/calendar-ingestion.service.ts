@@ -31,6 +31,7 @@ export class CalendarIngestionService {
         startTime: event.start?.dateTime || event.start?.date,
         endTime: event.end?.dateTime || event.end?.date,
         createdBy: userId,
+        hostId: userId,
         participants: event.attendees?.map((a) => a.email) || [],
         externalEventId: event.id,
         source: 'calendar',
