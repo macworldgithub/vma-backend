@@ -38,4 +38,16 @@ export class AuthController {
   login(@Body() body: any) {
     return this.auth.login(body);
   }
+
+  @Post('forgot-password')
+  @ApiOperation({ summary: 'Initiate password reset' })
+  forgotPassword(@Body() body: { email: string }) {
+    return this.auth.forgotPassword(body.email);
+  }
+
+  @Post('reset-password')
+  @ApiOperation({ summary: 'Reset password with OTP' })
+  resetPassword(@Body() body: any) {
+    return this.auth.resetPassword(body);
+  }
 }

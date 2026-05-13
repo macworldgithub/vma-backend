@@ -147,6 +147,26 @@ export class MeetingsController {
     return this.service.endMeeting(id, req.user.sub);
   }
 
+  // ─── CANCEL MEETING ────────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post(':id/cancel')
+  @ApiOperation({ summary: 'Cancel a meeting (host only)' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Meeting cancelled' })
+  cancel(@Param('id') id: string, @Req() req: any) {
+    return this.service.cancelMeeting(id, req.user.sub);
+  }
+
+  // ─── UPDATE MEETING ────────────────────────────────────────────────────
+  @UseGuards(JwtGuard)
+  @Post(':id/update') // Using POST for update to avoid PATCH complexity for now, or just use PATCH
+  @ApiOperation({ summary: 'Update meeting details (host only)' })
+  @ApiParam({ name: 'id', description: 'Meeting ID' })
+  @ApiResponse({ status: 200, description: 'Meeting updated' })
+  update(@Param('id') id: string, @Body() dto: any, @Req() req: any) {
+    return this.service.updateMeeting(id, dto, req.user.sub);
+  }
+
   // ─── GET MEETING WITH LIVE PARTICIPANTS ───────────────────────────────
   @UseGuards(JwtGuard)
   @Get(':id/live')

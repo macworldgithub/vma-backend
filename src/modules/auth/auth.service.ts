@@ -62,4 +62,27 @@ export class AuthService {
       access_token: this.jwt.sign(payload),
     };
   }
+
+  // FORGOT PASSWORD
+  async forgotPassword(email: string) {
+    const user = await this.users.findByEmail(email);
+    if (!user) throw new BadRequestException('User not found');
+
+    return this.otp.sendOtp(email);
+  }
+
+  // RESET PASSWORD
+  async resetPassword(dto: any) {
+    const valid = await this.otp.validateOtp(dto.email, dto.code);
+    if (!valid) throw new BadRequestException('Invalid or expired OTP');
+
+    const user = await this.users.findByEmail(dto.email);
+    if (!user) throw new BadRequestException('User not found');
+
+    const hash = await bcrypt.hash(dto.password, 10);
+    // We need an update method in UsersService
+    await (user as any).updateOne({ password: hash });
+
+    return { message: 'Password reset successfully' };
+  }
 }

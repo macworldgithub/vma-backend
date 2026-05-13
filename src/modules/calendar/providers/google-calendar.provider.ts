@@ -49,4 +49,10 @@ export class GoogleCalendarProvider {
 
     return res.data.items || [];
   }
+
+  async refreshTokens(refreshToken: string) {
+    this.oauthClient.setCredentials({ refresh_token: refreshToken });
+    const { credentials } = await this.oauthClient.refreshAccessToken();
+    return credentials;
+  }
 }

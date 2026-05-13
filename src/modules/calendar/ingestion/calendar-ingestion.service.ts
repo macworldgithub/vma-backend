@@ -59,4 +59,11 @@ export class CalendarIngestionService {
       meetings: results,
     };
   }
+
+  async getMeetingsForUser(userId: string) {
+    return this.meetingModel.find({
+      createdBy: userId,
+      source: 'calendar',
+    }).sort({ startTime: -1 });
+  }
 }

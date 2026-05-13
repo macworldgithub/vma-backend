@@ -14,7 +14,7 @@ import { JwtGuard } from 'src/common/guards/jwt.guard';
 // @UseGuards(JwtGuard)
 @Controller('calendar')
 export class CalendarController {
-  constructor(private readonly calendarService: CalendarService) {}
+  constructor(private readonly calendarService: CalendarService) { }
 
   // GOOGLE CALLBACK
   @Get('google/callback')

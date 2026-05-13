@@ -117,6 +117,44 @@ export class MeetingsService {
   }
 
   /**
+   * Cancel a meeting
+   */
+  async cancelMeeting(meetingId: string, userId: string) {
+    const meeting = await this.model.findById(meetingId);
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    if (meeting.hostId !== userId) throw new ForbiddenException('Only the host can cancel');
+
+    meeting.status = MeetingStatus.CANCELLED;
+    await meeting.save();
+
+    // If there is an active room, end it
+    if (meeting.roomId) {
+      try {
+        await this.roomService.endRoom(meeting.roomId, userId);
+      } catch {}
+    }
+
+    return meeting;
+  }
+
+  /**
+   * Update meeting details
+   */
+  async updateMeeting(meetingId: string, dto: any, userId: string) {
+    const meeting = await this.model.findById(meetingId);
+    if (!meeting) throw new NotFoundException('Meeting not found');
+    if (meeting.hostId !== userId) throw new ForbiddenException('Only the host can update');
+
+    if (dto.title) meeting.title = dto.title;
+    if (dto.startTime) meeting.startTime = new Date(dto.startTime);
+    if (dto.endTime) meeting.endTime = new Date(dto.endTime);
+    if (dto.maxParticipants) meeting.maxParticipants = dto.maxParticipants;
+
+    await meeting.save();
+    return meeting;
+  }
+
+  /**
    * Get meeting by short code (for join page)
    */
   async getByCode(meetingCode: string) {

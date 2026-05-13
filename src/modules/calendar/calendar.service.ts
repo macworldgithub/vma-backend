@@ -38,23 +38,38 @@ export class CalendarService {
 
   // SYNC CALENDAR EVENTS
   async syncCalendar(userId: string) {
-  const token = await this.tokenModel.findOne({ userId });
+    let token = await this.tokenModel.findOne({ userId });
 
-  if (!token) {
-    return { message: 'No calendar connected' };
+    if (!token) {
+      return { message: 'No calendar connected' };
+    }
+
+    // Check if token is expired (or close to it)
+    if (token.expiryDate.getTime() < Date.now() + 60000) {
+      if (token.refreshToken) {
+        const credentials = await this.googleProvider.refreshTokens(token.refreshToken);
+        token.accessToken = credentials.access_token!;
+        if (credentials.expiry_date) {
+          token.expiryDate = new Date(credentials.expiry_date);
+        }
+        await token.save();
+      } else {
+        return { message: 'Token expired and no refresh token available' };
+      }
+    }
+
+    const events = await this.googleProvider.fetchEvents(token.accessToken);
+
+    //  PIPELINE STEP
+    return this.ingestionService.ingestGoogleEvents(userId, events);
   }
 
-  const events = await this.googleProvider.fetchEvents(token.accessToken);
-
-  //  PIPELINE STEP
-  return this.ingestionService.ingestGoogleEvents(userId, events);
-}
-
-  // STORED EVENTS (later connect to Meeting schema)
+  // STORED EVENTS
   async getStoredEvents(userId: string) {
+    const meetings = await this.ingestionService.getMeetingsForUser(userId);
     return {
-      message: 'Connect to Meeting collection later',
-      data: [],
+      count: meetings.length,
+      data: meetings,
     };
   }
 

@@ -15,7 +15,19 @@ export class UsersService {
     return this.model.create(data);
   }
 
+  findById(id: string) {
+    return this.model.findById(id).select('-password');
+  }
+
   findAll() {
     return this.model.find();
+  }
+
+  update(id: string, data: any) {
+    return this.model.findByIdAndUpdate(id, data, { new: true }).select('-password');
+  }
+
+  remove(id: string) {
+    return this.model.findByIdAndDelete(id);
   }
 }
