@@ -56,6 +56,7 @@ export class RoomService {
     userId: string,
     socketId: string,
     userName: string = '',
+    initialState?: { audioEnabled?: boolean; videoEnabled?: boolean },
   ) {
     const room = await this.roomModel.findOne({ roomId });
 
@@ -76,6 +77,9 @@ export class RoomService {
       throw new BadRequestException('Meeting is at maximum capacity');
     }
 
+    // Identify stale entries for this user
+    const staleParticipant = room.participants.find((p) => p.userId === userId);
+
     // Remove any stale entries for this user (e.g. reconnecting)
     room.participants = room.participants.filter(
       (p) => p.userId !== userId,
@@ -86,8 +90,8 @@ export class RoomService {
       userId,
       socketId,
       userName,
-      audioEnabled: true,
-      videoEnabled: true,
+      audioEnabled: initialState?.audioEnabled ?? true,
+      videoEnabled: initialState?.videoEnabled ?? true,
       screenSharing: false,
       joinedAt: new Date(),
     });
@@ -99,7 +103,7 @@ export class RoomService {
     }
 
     await room.save();
-    return room;
+    return { room, staleParticipant };
   }
 
   /**

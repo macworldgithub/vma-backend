@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString } from 'class-validator';
+import { IsString, IsOptional, IsBoolean } from 'class-validator';
 
 export class JoinRoomDto {
   @ApiProperty()
@@ -9,4 +9,19 @@ export class JoinRoomDto {
   @ApiProperty()
   @IsString()
   userId!: string;
-}
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  userName?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  audioEnabled?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  videoEnabled?: boolean;
+}

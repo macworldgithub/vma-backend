@@ -13,6 +13,7 @@ import { RoomService } from '../services/room.service';
 import { ChatService } from '../services/chat.service';
 import { JwtService } from '@nestjs/jwt';
 import { Logger } from '@nestjs/common';
+import { SignalDto } from '../dto/signal.dto';
 
 interface SocketUser {
   userId: string;
@@ -80,7 +81,13 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   // ─── JOIN ROOM ───────────────────────────────────────────────────────
   @SubscribeMessage('join-room')
   async joinRoom(
-    @MessageBody() data: { roomId: string; userId?: string; userName?: string },
+    @MessageBody() data: { 
+      roomId: string; 
+      userId?: string; 
+      userName?: string;
+      audioEnabled?: boolean;
+      videoEnabled?: boolean;
+    },
     @ConnectedSocket() client: Socket,
   ) {
     try {
@@ -91,12 +98,26 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       this.logger.log(`User ${userId} (${userName}) joining room ${data.roomId}`);
 
       // Join room in DB
-      const room = await this.roomService.joinRoom(
+      const { room, staleParticipant } = await this.roomService.joinRoom(
         data.roomId,
         userId,
         client.id,
         userName,
+        {
+          audioEnabled: data.audioEnabled,
+          videoEnabled: data.videoEnabled,
+        }
       );
+
+      // If there was a stale entry for this user, notify the room that the old connection is gone
+      if (staleParticipant && staleParticipant.socketId !== client.id) {
+        this.logger.log(`Replacing stale socket ${staleParticipant.socketId} for user ${userId}`);
+        client.to(data.roomId).emit('user-left', {
+          userId,
+          socketId: staleParticipant.socketId,
+          userName,
+        });
+      }
 
       // Join Socket.IO room
       client.join(data.roomId);
@@ -125,8 +146,8 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
         userId,
         socketId: client.id,
         userName,
-        audioEnabled: true,
-        videoEnabled: true,
+        audioEnabled: data.audioEnabled ?? true,
+        videoEnabled: data.videoEnabled ?? true,
         screenSharing: false,
       });
 
@@ -153,12 +174,11 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   // ─── WEBRTC SIGNALING: OFFER ─────────────────────────────────────────
   @SubscribeMessage('offer')
   async handleOffer(
-    @MessageBody() data: { targetSocketId: string; signal: any; roomId: string },
+    @MessageBody() data: SignalDto,
     @ConnectedSocket() client: Socket,
   ) {
     const socketUser = this.socketUsers.get(client.id);
-
-    this.logger.debug(`Offer from ${client.id} to ${data.targetSocketId}`);
+    this.logger.log(`[SIGNAL] Offer: ${client.id} -> ${data.targetSocketId} (Room: ${data.roomId})`);
 
     // Send offer ONLY to the target peer
     this.server.to(data.targetSocketId).emit('offer', {
@@ -173,12 +193,11 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   // ─── WEBRTC SIGNALING: ANSWER ────────────────────────────────────────
   @SubscribeMessage('answer')
   async handleAnswer(
-    @MessageBody() data: { targetSocketId: string; signal: any; roomId: string },
+    @MessageBody() data: SignalDto,
     @ConnectedSocket() client: Socket,
   ) {
     const socketUser = this.socketUsers.get(client.id);
-
-    this.logger.debug(`Answer from ${client.id} to ${data.targetSocketId}`);
+    this.logger.log(`[SIGNAL] Answer: ${client.id} -> ${data.targetSocketId} (Room: ${data.roomId})`);
 
     // Send answer ONLY to the target peer
     this.server.to(data.targetSocketId).emit('answer', {
@@ -193,16 +212,17 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   // ─── WEBRTC SIGNALING: ICE CANDIDATE ─────────────────────────────────
   @SubscribeMessage('ice-candidate')
   async handleIceCandidate(
-    @MessageBody() data: { targetSocketId: string; candidate: any; roomId: string },
+    @MessageBody() data: SignalDto,
     @ConnectedSocket() client: Socket,
   ) {
     const socketUser = this.socketUsers.get(client.id);
+    this.logger.debug(`[SIGNAL] ICE: ${client.id} -> ${data.targetSocketId}`);
 
     // Send ICE candidate ONLY to the target peer
     this.server.to(data.targetSocketId).emit('ice-candidate', {
       fromSocketId: client.id,
       fromUserId: socketUser?.userId,
-      candidate: data.candidate,
+      candidate: data.signal, // In SignalDto, we use signal property for both SD and candidates
       roomId: data.roomId,
     });
   }

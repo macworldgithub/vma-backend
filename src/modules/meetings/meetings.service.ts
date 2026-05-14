@@ -20,6 +20,13 @@ export class MeetingsService {
     const isInstant = !dto.scheduledStart;
     const maxParticipants = dto.maxParticipants || 10;
 
+    if (!isInstant) {
+      const scheduledDate = new Date(dto.scheduledStart);
+      if (scheduledDate.getTime() < Date.now() - 60000) { // 1 min grace
+        throw new BadRequestException('Scheduled start time must be in the future');
+      }
+    }
+
     // 1. Create the meeting record first (to get _id)
     const meeting = await this.model.create({
       title: dto.title,
