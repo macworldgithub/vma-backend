@@ -31,12 +31,11 @@ export class AuthService {
 
     const hash = await bcrypt.hash(dto.password, 10);
 
-    const role = dto.role === UserRole.ADMIN ? UserRole.STAFF : dto.role;
     await this.users.create({
       email: dto.email,
       password: hash,
       name: dto.name,
-      role,
+      role: dto.role || UserRole.STAFF,
     });
 
     return { message: 'User registered successfully' };
@@ -47,6 +46,11 @@ export class AuthService {
     const user = await this.users.findByEmail(dto.email);
 
     if (!user) throw new BadRequestException('Invalid credentials');
+
+    // Verify role matches
+    if (user.role !== dto.role) {
+      throw new BadRequestException(`Access denied: User is not registered as ${dto.role}`);
+    }
 
     const match = await bcrypt.compare(dto.password, user.password);
 
@@ -60,6 +64,12 @@ export class AuthService {
 
     return {
       access_token: this.jwt.sign(payload),
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+      },
     };
   }
 
