@@ -16,6 +16,8 @@ export class CalendarIngestionService {
     for (const event of events) {
       if (!event.id) continue;
 
+      console.log('DEBUG: RAW GOOGLE EVENT:', JSON.stringify(event, null, 2));
+
       // 🔍 1. Check if already exists
       const existing = await this.meetingModel.findOne({
         externalEventId: event.id,
@@ -24,10 +26,20 @@ export class CalendarIngestionService {
       });
 
       // 🧠 2. Normalize event → Meeting format
+      const rawLink =
+        event.hangoutLink ||
+        event.conferenceData?.entryPoints?.find((ep) => ep.type === 'video')?.uri ||
+        event.conferenceData?.entryPoints?.[0]?.uri ||
+        (this.isValidUrl(event.location) ? event.location : '') ||
+        this.extractUrl(event.description) ||
+        this.findAnyMeetLink(event) ||
+        event.htmlLink ||
+        '';
+
       const meetingData = {
         title: event.summary || 'Untitled Meeting',
-        platform: 'google',
-        meetingLink: event.hangoutLink || '',
+        platform: this.detectPlatform(rawLink),
+        meetingLink: rawLink,
         startTime: event.start?.dateTime || event.start?.date,
         endTime: event.end?.dateTime || event.end?.date,
         createdBy: userId,
@@ -66,5 +78,37 @@ export class CalendarIngestionService {
       createdBy: userId,
       source: 'calendar',
     }).sort({ startTime: -1 });
+  }
+
+  private isValidUrl(text: string): boolean {
+    if (!text) return false;
+    try {
+      new URL(text);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private extractUrl(text: string): string | null {
+    if (!text) return null;
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const match = text.match(urlRegex);
+    return match ? match[0] : null;
+  }
+
+  private findAnyMeetLink(event: any): string | null {
+    const str = JSON.stringify(event);
+    const match = str.match(/https:\/\/(meet\.google\.com|zoom\.us|teams\.microsoft\.com)\/[^\s"']+/);
+    return match ? match[0] : null;
+  }
+
+  private detectPlatform(link: string): string {
+    if (!link) return 'google';
+    const lowerLink = link.toLowerCase();
+    if (lowerLink.includes('teams.microsoft.com')) return 'teams';
+    if (lowerLink.includes('zoom.us')) return 'zoom';
+    if (lowerLink.includes('meet.google.com')) return 'google';
+    return 'google';
   }
 }

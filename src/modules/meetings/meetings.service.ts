@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, isValidObjectId } from 'mongoose';
 import { Meeting, MeetingStatus } from './schemas/meeting.schema';
 import { RoomService } from '../realtime/services/room.service';
 import { ConfigService } from '@nestjs/config';
@@ -158,7 +158,15 @@ export class MeetingsService {
    * Get meeting by short code (for join page)
    */
   async getByCode(meetingCode: string) {
-    const meeting = await this.model.findOne({ meetingCode });
+    const query: any = {
+      $or: [{ meetingCode }],
+    };
+
+    if (isValidObjectId(meetingCode)) {
+      query.$or.push({ _id: meetingCode });
+    }
+
+    const meeting = await this.model.findOne(query);
     if (!meeting) throw new NotFoundException('Meeting not found');
     return meeting;
   }
@@ -199,6 +207,7 @@ export class MeetingsService {
    */
   async getUserMeetings(userId: string) {
     return this.model.find({
+      platform: 'vma',
       $or: [
         { createdBy: userId },
         { hostId: userId },

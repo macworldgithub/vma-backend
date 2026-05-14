@@ -18,7 +18,10 @@ export class GoogleCalendarProvider {
   getAuthUrl(userId: string) {
     return this.oauthClient.generateAuthUrl({
       access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/calendar.readonly'],
+      scope: [
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/calendar.events.readonly'
+      ],
       prompt: 'consent',
       state: userId,
     });
@@ -39,13 +42,14 @@ export class GoogleCalendarProvider {
       auth: this.oauthClient,
     });
 
-    const res = await calendar.events.list({
+    const res: any = await calendar.events.list({
       calendarId: 'primary',
       timeMin: new Date().toISOString(),
       maxResults: 50,
       singleEvents: true,
       orderBy: 'startTime',
-    });
+      conferenceDataVersion: 1,
+    } as any);
 
     return res.data.items || [];
   }
