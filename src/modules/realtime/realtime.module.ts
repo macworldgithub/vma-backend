@@ -7,6 +7,7 @@ import { ChatService } from './services/chat.service';
 
 import { Room, RoomSchema } from './schemas/room.schema';
 import { MeetingChat, MeetingChatSchema } from './schemas/meeting-chat.schema';
+import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
 import { JwtCommonModule } from 'src/common/jwt.module';
 
 @Module({
@@ -14,6 +15,7 @@ import { JwtCommonModule } from 'src/common/jwt.module';
     MongooseModule.forFeature([
       { name: Room.name, schema: RoomSchema },
       { name: MeetingChat.name, schema: MeetingChatSchema },
+      { name: Meeting.name, schema: MeetingSchema },
     ]),
     JwtCommonModule,
   ],

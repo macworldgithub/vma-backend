@@ -2,6 +2,7 @@ import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/com
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Room, RoomStatus } from '../schemas/room.schema';
+import { Meeting, MeetingStatus } from '../../meetings/schemas/meeting.schema';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -9,6 +10,8 @@ export class RoomService {
   constructor(
     @InjectModel(Room.name)
     private roomModel: Model<Room>,
+    @InjectModel(Meeting.name)
+    private meetingModel: Model<Meeting>,
   ) {}
 
   /**
@@ -121,6 +124,12 @@ export class RoomService {
     if (room.participants.length === 0 && room.status === RoomStatus.ACTIVE) {
       room.status = RoomStatus.ENDED;
       room.endedAt = new Date();
+
+      // Sync with Meeting status
+      await this.meetingModel.updateOne(
+        { _id: room.meetingId },
+        { status: MeetingStatus.ENDED, actualEndTime: new Date() }
+      );
     }
 
     await room.save();
@@ -148,6 +157,12 @@ export class RoomService {
     if (room.participants.length === 0 && room.status === RoomStatus.ACTIVE) {
       room.status = RoomStatus.ENDED;
       room.endedAt = new Date();
+
+      // Sync with Meeting status
+      await this.meetingModel.updateOne(
+        { _id: room.meetingId },
+        { status: MeetingStatus.ENDED, actualEndTime: new Date() }
+      );
     }
 
     await room.save();
@@ -177,6 +192,12 @@ export class RoomService {
     room.endedAt = new Date();
     room.participants = [];
     await room.save();
+
+    // Sync with Meeting status
+    await this.meetingModel.updateOne(
+      { _id: room.meetingId },
+      { status: MeetingStatus.ENDED, actualEndTime: new Date() }
+    );
 
     return room;
   }
