@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { CalendarToken } from './schemas/calendar-token.schema';
@@ -66,6 +66,10 @@ export class CalendarService {
 
   // STORED EVENTS
   async getStoredEvents(userId: string) {
+    const token = await this.tokenModel.findOne({ userId });
+    if (!token) {
+      throw new NotFoundException('No calendar connected');
+    }
     const meetings = await this.ingestionService.getMeetingsForUser(userId);
     return {
       count: meetings.length,
