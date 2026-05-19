@@ -36,20 +36,25 @@ export class MeetingsController {
     private configService: ConfigService,
   ) {}
 
-  // ─── ICE SERVER CONFIG (for WebRTC) ──────────────────────────────────
   @Get('ice-servers')
   @ApiOperation({ summary: 'Get STUN/TURN server configuration for WebRTC' })
   @ApiResponse({ status: 200, description: 'ICE server configuration' })
   getIceServers() {
     const servers: any[] = [];
 
-    const stunUrl = this.configService.get('STUN_URL');
+    let stunUrl = this.configService.get<string>('STUN_URL');
     if (stunUrl) {
+      if (!stunUrl.startsWith('stun:') && !stunUrl.startsWith('stuns:')) {
+        stunUrl = `stun:${stunUrl}`;
+      }
       servers.push({ urls: stunUrl });
     }
 
-    const turnUrl = this.configService.get('TURN_URL');
+    let turnUrl = this.configService.get<string>('TURN_URL');
     if (turnUrl) {
+      if (!turnUrl.startsWith('turn:') && !turnUrl.startsWith('turns:')) {
+        turnUrl = `turn:${turnUrl}`;
+      }
       servers.push({
         urls: turnUrl,
         username: this.configService.get('TURN_USERNAME'),
