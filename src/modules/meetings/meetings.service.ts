@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 import { Meeting, MeetingStatus } from './schemas/meeting.schema';
@@ -6,12 +6,78 @@ import { RoomService } from '../realtime/services/room.service';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
-export class MeetingsService {
+export class MeetingsService implements OnModuleInit {
   constructor(
     @InjectModel(Meeting.name) private model: Model<Meeting>,
     private roomService: RoomService,
     private configService: ConfigService,
   ) {}
+
+  onModuleInit() {
+    // Run cleanup on startup after a 5 second delay to let services initialize
+    setTimeout(() => this.cleanupOutdatedMeetings(), 5000);
+    // Run cleanup every 10 minutes in the background
+    setInterval(() => this.cleanupOutdatedMeetings(), 10 * 60 * 1000);
+  }
+
+  /**
+   * Automatically remove outdated meetings from both our platform and Google meetings.
+   * A meeting is considered outdated if:
+   * 1. Google meeting: endTime has passed (plus 5-minute grace period).
+   * 2. Google meeting without endTime: startTime is older than 24 hours.
+   * 3. Platform meeting (vma): status is ENDED or CANCELLED.
+   * 4. Platform meeting (vma): status is SCHEDULED and scheduled endTime has passed (plus 5-minute grace period).
+   * 5. Platform meeting (vma): status is SCHEDULED, never started, and startTime is older than 24 hours.
+   */
+  async cleanupOutdatedMeetings() {
+    const now = new Date();
+    // 5-minute grace period so users aren't booted out instantly if a meeting runs slightly over
+    const graceTime = new Date(now.getTime() - 5 * 60 * 1000);
+    
+    // Scheduled meetings that were never started and are older than 24 hours
+    const staleScheduledTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    try {
+      const result = await this.model.deleteMany({
+        $or: [
+          // 1. Google meetings whose endTime has passed (plus grace period)
+          {
+            provider: 'google',
+            endTime: { $lt: graceTime },
+          },
+          // 2. Google meetings without endTime where startTime is in the past by 24h
+          {
+            provider: 'google',
+            endTime: { $exists: false },
+            startTime: { $lt: staleScheduledTime },
+          },
+          // 3. Platform meetings (vma) that have ended or been cancelled
+          {
+            provider: 'vma',
+            status: { $in: [MeetingStatus.ENDED, MeetingStatus.CANCELLED] },
+          },
+          // 4. Platform meetings (vma) whose scheduled endTime has passed (plus grace period)
+          {
+            provider: 'vma',
+            status: MeetingStatus.SCHEDULED,
+            endTime: { $lt: graceTime },
+          },
+          // 5. Platform meetings (vma) scheduled to start over 24h ago but never started
+          {
+            provider: 'vma',
+            status: MeetingStatus.SCHEDULED,
+            startTime: { $lt: staleScheduledTime },
+          },
+        ],
+      });
+
+      if (result.deletedCount > 0) {
+        console.log(`[MeetingsCleanup] Automatically removed ${result.deletedCount} outdated meetings.`);
+      }
+    } catch (error) {
+      console.error('[MeetingsCleanup] Error automatically removing outdated meetings:', error);
+    }
+  }
 
   /**
    * Create a new meeting + room (instant or scheduled)
@@ -213,6 +279,9 @@ export class MeetingsService {
    * Get meetings for a specific user
    */
   async getUserMeetings(userId: string) {
+    // Run cleanup to ensure only active/future meetings are returned
+    await this.cleanupOutdatedMeetings();
+
     return this.model.find({
       platform: 'vma',
       $or: [
@@ -227,6 +296,9 @@ export class MeetingsService {
    * Get all meetings (admin)
    */
   async getAllMeetings() {
+    // Run cleanup to ensure only active/future meetings are returned
+    await this.cleanupOutdatedMeetings();
+
     return this.model.find().sort({ startTime: -1 });
   }
 

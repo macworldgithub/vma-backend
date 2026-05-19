@@ -5,6 +5,7 @@ import { CalendarToken } from './schemas/calendar-token.schema';
 import { GoogleCalendarProvider } from './providers/google-calendar.provider';
 import { calendar_v3 } from 'googleapis';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
+import { MeetingsService } from '../meetings/meetings.service';
 
 @Injectable()
 export class CalendarService {
@@ -13,6 +14,7 @@ export class CalendarService {
     private tokenModel: Model<CalendarToken>,
     private googleProvider: GoogleCalendarProvider,
     private ingestionService: CalendarIngestionService,
+    private meetingsService: MeetingsService,
   ) {}
 
   // CONNECT GOOGLE
@@ -61,7 +63,12 @@ export class CalendarService {
     const events = await this.googleProvider.fetchEvents(token.accessToken);
 
     //  PIPELINE STEP
-    return this.ingestionService.ingestGoogleEvents(userId, events);
+    const result = await this.ingestionService.ingestGoogleEvents(userId, events);
+    
+    // Clean up outdated meetings after sync
+    await this.meetingsService.cleanupOutdatedMeetings();
+
+    return result;
   }
 
   // STORED EVENTS
@@ -70,6 +77,10 @@ export class CalendarService {
     if (!token) {
       throw new NotFoundException('No calendar connected');
     }
+    
+    // Clean up outdated meetings before returning stored events
+    await this.meetingsService.cleanupOutdatedMeetings();
+
     const meetings = await this.ingestionService.getMeetingsForUser(userId);
     return {
       count: meetings.length,
