@@ -10,7 +10,6 @@ import { GoogleCalendarProvider } from './providers/google-calendar.provider';
 import { AuthModule } from '../auth/auth.module';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
-import { MeetingsModule } from '../meetings/meetings.module';
 
 @Module({
   imports: [
@@ -19,7 +18,6 @@ import { MeetingsModule } from '../meetings/meetings.module';
       { name: Meeting.name, schema: MeetingSchema },
     ]),
     AuthModule,
-    MeetingsModule,
   ],
   controllers: [CalendarController],
   providers: [
@@ -28,4 +26,4 @@ import { MeetingsModule } from '../meetings/meetings.module';
     CalendarIngestionService,
   ],
 })
-export class CalendarModule {}
+export class CalendarModule { }

@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
 import {
   ApiTags,
   ApiBearerAuth,
@@ -34,9 +34,21 @@ export class CalendarController {
   })
   async googleCallback(
     @Query('code') code: string,
-    @Query('state') userId: string
+    @Query('state') state: string,
+    @Req() req: any,
+    @Res() res: any,
   ) {
-    return this.calendarService.connectGoogle(userId, code);
+    const isAjax = req.headers['accept']?.includes('application/json') || req.headers['x-requested-with'];
+
+    if (!isAjax) {
+      // Direct browser redirect from Google -> redirect to frontend callback page
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}`);
+    }
+
+    // AJAX request from the frontend -> exchange code, save token and return JSON
+    const token = await this.calendarService.connectGoogle(state, code);
+    return res.json(token);
   }
 
   // SYNC ALL EVENTS

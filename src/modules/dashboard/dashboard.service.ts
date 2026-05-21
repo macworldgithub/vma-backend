@@ -4,7 +4,6 @@ import { Model } from 'mongoose';
 import { Meeting, MeetingStatus } from '../meetings/schemas/meeting.schema';
 import { User } from '../users/users.schema';
 import { Room, RoomStatus } from '../realtime/schemas/room.schema';
-import { MeetingsService } from '../meetings/meetings.service';
 
 @Injectable()
 export class DashboardService {
@@ -12,15 +11,12 @@ export class DashboardService {
     @InjectModel(Meeting.name) private meetingModel: Model<Meeting>,
     @InjectModel(User.name) private userModel: Model<User>,
     @InjectModel(Room.name) private roomModel: Model<Room>,
-    private meetingsService: MeetingsService,
-  ) {}
+  ) { }
 
   /**
    * Main dashboard stats — single call for the frontend dashboard
    */
   async getStats() {
-    await this.meetingsService.cleanupOutdatedMeetings();
-
     const [
       totalUsers,
       activeUsers,
@@ -78,8 +74,6 @@ export class DashboardService {
    * Meeting history chart data — grouped by day for the last N days
    */
   async getMeetingHistory(days: number = 30) {
-    await this.meetingsService.cleanupOutdatedMeetings();
-
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
     startDate.setHours(0, 0, 0, 0);
@@ -127,8 +121,6 @@ export class DashboardService {
    * Recent meetings list (last 20)
    */
   async getRecentMeetings(limit: number = 20) {
-    await this.meetingsService.cleanupOutdatedMeetings();
-
     return this.meetingModel
       .find()
       .sort({ createdAt: -1 })

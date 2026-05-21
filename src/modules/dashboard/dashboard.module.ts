@@ -6,7 +6,6 @@ import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
 import { User, UserSchema } from '../users/users.schema';
 import { Room, RoomSchema } from '../realtime/schemas/room.schema';
 import { JwtCommonModule } from 'src/common/jwt.module';
-import { MeetingsModule } from '../meetings/meetings.module';
 
 @Module({
   imports: [
@@ -16,9 +15,8 @@ import { MeetingsModule } from '../meetings/meetings.module';
       { name: Room.name, schema: RoomSchema },
     ]),
     JwtCommonModule,
-    MeetingsModule,
   ],
   controllers: [DashboardController],
   providers: [DashboardService],
 })
-export class DashboardModule {}
+export class DashboardModule { }
