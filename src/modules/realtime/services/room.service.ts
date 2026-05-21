@@ -120,18 +120,6 @@ export class RoomService {
       (p) => p.userId !== userId,
     );
 
-    // Auto-end if no participants remain
-    if (room.participants.length === 0 && room.status === RoomStatus.ACTIVE) {
-      room.status = RoomStatus.ENDED;
-      room.endedAt = new Date();
-
-      // Sync with Meeting status
-      await this.meetingModel.updateOne(
-        { _id: room.meetingId },
-        { status: MeetingStatus.ENDED, actualEndTime: new Date() }
-      );
-    }
-
     await room.save();
     return room;
   }
@@ -152,18 +140,6 @@ export class RoomService {
     room.participants = room.participants.filter(
       (p) => p.socketId !== socketId,
     );
-
-    // Auto-end if no participants remain
-    if (room.participants.length === 0 && room.status === RoomStatus.ACTIVE) {
-      room.status = RoomStatus.ENDED;
-      room.endedAt = new Date();
-
-      // Sync with Meeting status
-      await this.meetingModel.updateOne(
-        { _id: room.meetingId },
-        { status: MeetingStatus.ENDED, actualEndTime: new Date() }
-      );
-    }
 
     await room.save();
 
