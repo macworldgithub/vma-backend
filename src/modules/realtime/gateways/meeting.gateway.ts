@@ -14,6 +14,7 @@ import { ChatService } from '../services/chat.service';
 import { JwtService } from '@nestjs/jwt';
 import { Logger } from '@nestjs/common';
 import { SignalDto } from '../dto/signal.dto';
+import { TranscriptService } from '../services/transcript.service';
 
 interface SocketUser {
   userId: string;
@@ -40,6 +41,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     private readonly roomService: RoomService,
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
+    private readonly transcriptService: TranscriptService,
   ) {}
 
   // ─── CONNECTION AUTHENTICATION ───────────────────────────────────────
@@ -335,6 +337,63 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     return {
       event: 'chat-history',
       data: messages,
+    };
+  }
+
+  // ─── SUBMIT TRANSCRIPT (finalized speech segment) ────────────────────
+  @SubscribeMessage('submit-transcript')
+  async handleSubmitTranscript(
+    @MessageBody() data: { roomId: string; text: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const socketUser = this.socketUsers.get(client.id);
+    if (!socketUser) return;
+
+    // Persist the transcript segment
+    const saved = await this.transcriptService.saveTranscript(
+      data.roomId,
+      socketUser.userId,
+      socketUser.userName,
+      data.text,
+    );
+
+    // Broadcast final transcript to everyone in the room
+    this.server.to(data.roomId).emit('new-transcript', {
+      id: (saved as any)._id,
+      userId: socketUser.userId,
+      userName: socketUser.userName,
+      text: data.text,
+      timestamp: saved.timestamp,
+    });
+  }
+
+  // ─── SUBMIT INTERIM TRANSCRIPT (real-time subtitles) ─────────────────
+  @SubscribeMessage('submit-transcript-interim')
+  async handleSubmitTranscriptInterim(
+    @MessageBody() data: { roomId: string; text: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const socketUser = this.socketUsers.get(client.id);
+    if (!socketUser) return;
+
+    // Broadcast interim transcript immediately (no saving to DB to prevent bloat)
+    client.to(data.roomId).emit('new-transcript-interim', {
+      userId: socketUser.userId,
+      userName: socketUser.userName,
+      text: data.text,
+    });
+  }
+
+  // ─── GET TRANSCRIPT HISTORY ──────────────────────────────────────────
+  @SubscribeMessage('get-transcript-history')
+  async handleGetTranscriptHistory(
+    @MessageBody() data: { roomId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const transcripts = await this.transcriptService.getTranscripts(data.roomId);
+    return {
+      event: 'transcript-history',
+      data: transcripts,
     };
   }
 
