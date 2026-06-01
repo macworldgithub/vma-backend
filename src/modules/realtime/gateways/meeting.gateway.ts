@@ -15,6 +15,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Logger } from '@nestjs/common';
 import { SignalDto } from '../dto/signal.dto';
 import { TranscriptService } from '../services/transcript.service';
+import { DeepgramService } from '../services/deepgram.service';
 
 interface SocketUser {
   userId: string;
@@ -42,6 +43,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
     private readonly transcriptService: TranscriptService,
+    private readonly deepgramService: DeepgramService,
   ) {}
 
   // ─── CONNECTION AUTHENTICATION ───────────────────────────────────────
@@ -340,7 +342,80 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     };
   }
 
-  // ─── SUBMIT TRANSCRIPT (finalized speech segment) ────────────────────
+  // ─── START DEEPGRAM TRANSCRIPTION ────────────────────────────────────
+  @SubscribeMessage('start-transcription')
+  async handleStartTranscription(
+    @MessageBody() data: { roomId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const socketUser = this.socketUsers.get(client.id);
+    if (!socketUser) return;
+
+    this.logger.log(
+      `[Deepgram] Starting stream for ${socketUser.userName} in room ${data.roomId}`,
+    );
+
+    await this.deepgramService.startStream(client.id, {
+      onInterim: (text: string) => {
+        // Broadcast live subtitle to entire room (including sender)
+        this.server.to(data.roomId).emit('new-transcript-interim', {
+          userId: socketUser.userId,
+          userName: socketUser.userName,
+          text,
+        });
+      },
+      onFinal: async (text: string) => {
+        // Persist and broadcast final transcript to entire room
+        const saved = await this.transcriptService.saveTranscript(
+          data.roomId,
+          socketUser.userId,
+          socketUser.userName,
+          text,
+        );
+        this.server.to(data.roomId).emit('new-transcript', {
+          id: (saved as any)._id,
+          userId: socketUser.userId,
+          userName: socketUser.userName,
+          text,
+          timestamp: (saved as any).timestamp,
+        });
+      },
+      onError: (err: any) => {
+        this.logger.error(
+          `[Deepgram] Stream error for ${client.id}: ${JSON.stringify(err)}`,
+        );
+      },
+    });
+
+    return { event: 'transcription-started', data: { success: true } };
+  }
+
+  // ─── AUDIO CHUNK → DEEPGRAM ───────────────────────────────────────────
+  @SubscribeMessage('audio-chunk')
+  handleAudioChunk(
+    @MessageBody() data: any,
+    @ConnectedSocket() client: Socket,
+  ) {
+    // data arrives as Buffer, ArrayBuffer, or wrapped object depending on transport
+    const chunk = Buffer.isBuffer(data)
+      ? data
+      : data instanceof ArrayBuffer
+        ? Buffer.from(data)
+        : Buffer.from(data as any);
+
+    this.deepgramService.sendAudio(client.id, chunk);
+  }
+
+  // ─── STOP DEEPGRAM TRANSCRIPTION ─────────────────────────────────────
+  @SubscribeMessage('stop-transcription')
+  async handleStopTranscription(
+    @ConnectedSocket() client: Socket,
+  ) {
+    await this.deepgramService.stopStream(client.id);
+    return { event: 'transcription-stopped', data: { success: true } };
+  }
+
+  // ─── SUBMIT TRANSCRIPT (legacy / manual fallback) ────────────────────
   @SubscribeMessage('submit-transcript')
   async handleSubmitTranscript(
     @MessageBody() data: { roomId: string; text: string },
@@ -349,7 +424,6 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const socketUser = this.socketUsers.get(client.id);
     if (!socketUser) return;
 
-    // Persist the transcript segment
     const saved = await this.transcriptService.saveTranscript(
       data.roomId,
       socketUser.userId,
@@ -357,7 +431,6 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       data.text,
     );
 
-    // Broadcast final transcript to everyone in the room
     this.server.to(data.roomId).emit('new-transcript', {
       id: (saved as any)._id,
       userId: socketUser.userId,
@@ -367,7 +440,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     });
   }
 
-  // ─── SUBMIT INTERIM TRANSCRIPT (real-time subtitles) ─────────────────
+  // ─── SUBMIT INTERIM TRANSCRIPT (legacy / manual fallback) ────────────
   @SubscribeMessage('submit-transcript-interim')
   async handleSubmitTranscriptInterim(
     @MessageBody() data: { roomId: string; text: string },
@@ -376,7 +449,6 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const socketUser = this.socketUsers.get(client.id);
     if (!socketUser) return;
 
-    // Broadcast interim transcript immediately (no saving to DB to prevent bloat)
     client.to(data.roomId).emit('new-transcript-interim', {
       userId: socketUser.userId,
       userName: socketUser.userName,
@@ -519,7 +591,8 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   async handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
 
-    const socketUser = this.socketUsers.get(client.id);
+    // Stop any active Deepgram stream for this socket
+    await this.deepgramService.stopStream(client.id);
 
     // Remove from room in DB (finds room by socketId)
     const result = await this.roomService.leaveRoomBySocketId(client.id);

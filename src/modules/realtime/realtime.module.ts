@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ConfigModule } from '@nestjs/config';
 
 import { MeetingGateway } from './gateways/meeting.gateway';
 import { RoomService } from './services/room.service';
 import { ChatService } from './services/chat.service';
 import { TranscriptService } from './services/transcript.service';
+import { DeepgramService } from './services/deepgram.service';
 
 import { Room, RoomSchema } from './schemas/room.schema';
 import { MeetingChat, MeetingChatSchema } from './schemas/meeting-chat.schema';
@@ -14,6 +16,7 @@ import { JwtCommonModule } from 'src/common/jwt.module';
 
 @Module({
   imports: [
+    ConfigModule,
     MongooseModule.forFeature([
       { name: Room.name, schema: RoomSchema },
       { name: MeetingChat.name, schema: MeetingChatSchema },
@@ -22,7 +25,7 @@ import { JwtCommonModule } from 'src/common/jwt.module';
     ]),
     JwtCommonModule,
   ],
-  providers: [MeetingGateway, RoomService, ChatService, TranscriptService],
-  exports: [RoomService, ChatService, TranscriptService],
+  providers: [MeetingGateway, RoomService, ChatService, TranscriptService, DeepgramService],
+  exports: [RoomService, ChatService, TranscriptService, DeepgramService],
 })
-export class RealtimeModule {}
+export class RealtimeModule {}
