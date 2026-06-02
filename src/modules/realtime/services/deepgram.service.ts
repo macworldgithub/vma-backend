@@ -12,17 +12,26 @@ interface TranscriptCallbacks {
   onError?: (err: any) => void;
 }
 
+interface ActiveConnection {
+  client: ListenLiveClient;
+  ready: Promise<void>;
+  keepAliveTimer?: ReturnType<typeof setInterval>;
+}
+
 @Injectable()
 export class DeepgramService implements OnModuleDestroy {
   private readonly logger = new Logger(DeepgramService.name);
 
   /** One live connection per socket ID */
-  private readonly connections = new Map<string, ListenLiveClient>();
+  private readonly connections = new Map<string, ActiveConnection>();
 
   private readonly deepgram;
 
   constructor(private readonly config: ConfigService) {
     const key = this.config.get<string>('DEEPGRAM_KEY') ?? '';
+    if (!key) {
+      this.logger.warn('[Deepgram] No DEEPGRAM_KEY configured — transcription will not work');
+    }
     this.deepgram = createClient(key);
   }
 
@@ -38,17 +47,35 @@ export class DeepgramService implements OnModuleDestroy {
 
     const connection: ListenLiveClient = this.deepgram.listen.live({
       model: 'nova-2',
-      language: 'en-AU',
+      language: 'en',
       punctuate: true,
       smart_format: true,
       interim_results: true,
       endpointing: 300,
       diarize: true,
-      // Let Deepgram auto-detect container format (webm / ogg / mp4)
+      // No explicit encoding — Deepgram auto-detects webm/opus from MediaRecorder
     });
 
-    connection.on(LiveTranscriptionEvents.Open, () => {
-      this.logger.log(`[Deepgram] Stream OPEN  → socket ${socketId}`);
+    // Create a promise that resolves when the WebSocket to Deepgram is open
+    const ready = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Deepgram connection timed out after 10s'));
+      }, 10000);
+
+      connection.on(LiveTranscriptionEvents.Open, () => {
+        clearTimeout(timeout);
+        this.logger.log(`[Deepgram] Stream OPEN  → socket ${socketId}`);
+        resolve();
+      });
+
+      connection.on(LiveTranscriptionEvents.Error, (err: any) => {
+        clearTimeout(timeout);
+        this.logger.error(
+          `[Deepgram] Error for socket ${socketId}: ${JSON.stringify(err)}`,
+        );
+        callbacks.onError?.(err);
+        reject(err);
+      });
     });
 
     connection.on(LiveTranscriptionEvents.Transcript, (data: any) => {
@@ -70,19 +97,31 @@ export class DeepgramService implements OnModuleDestroy {
       }
     });
 
-    connection.on(LiveTranscriptionEvents.Error, (err: any) => {
-      this.logger.error(
-        `[Deepgram] Error for socket ${socketId}: ${JSON.stringify(err)}`,
-      );
-      callbacks.onError?.(err);
-    });
-
     connection.on(LiveTranscriptionEvents.Close, () => {
       this.logger.log(`[Deepgram] Stream CLOSED → socket ${socketId}`);
-      this.connections.delete(socketId);
+      this.cleanupConnection(socketId);
     });
 
-    this.connections.set(socketId, connection);
+    // Send keepAlive every 8 seconds to prevent Deepgram from closing
+    // the connection due to inactivity
+    const keepAliveTimer = setInterval(() => {
+      try {
+        connection.keepAlive();
+      } catch {
+        // Connection already closed, timer will be cleared on cleanup
+      }
+    }, 8000);
+
+    this.connections.set(socketId, { client: connection, ready, keepAliveTimer });
+
+    // Wait for the connection to be ready before returning
+    try {
+      await ready;
+    } catch (err) {
+      this.logger.error(`[Deepgram] Failed to open stream for ${socketId}: ${err}`);
+      this.cleanupConnection(socketId);
+      throw err;
+    }
   }
 
   // ── Forward raw audio to Deepgram ────────────────────────────────────
@@ -90,7 +129,8 @@ export class DeepgramService implements OnModuleDestroy {
     const conn = this.connections.get(socketId);
     if (!conn) return;
     try {
-      conn.send(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+      // Cast chunk to any to avoid TS type mismatch between Node Buffer and DOM socket types
+      conn.client.send(chunk as any);
     } catch (err) {
       this.logger.warn(`[Deepgram] sendAudio error for ${socketId}: ${err}`);
     }
@@ -101,12 +141,20 @@ export class DeepgramService implements OnModuleDestroy {
     const conn = this.connections.get(socketId);
     if (!conn) return;
     try {
-      conn.finish();
+      conn.client.requestClose();
     } catch {
       // already closed
     }
-    this.connections.delete(socketId);
+    this.cleanupConnection(socketId);
     this.logger.log(`[Deepgram] Stream stopped for socket ${socketId}`);
+  }
+
+  private cleanupConnection(socketId: string): void {
+    const conn = this.connections.get(socketId);
+    if (conn?.keepAliveTimer) {
+      clearInterval(conn.keepAliveTimer);
+    }
+    this.connections.delete(socketId);
   }
 
   // ── Cleanup all streams on module shutdown ───────────────────────────
