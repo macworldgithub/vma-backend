@@ -10,6 +10,7 @@ interface TranscriptCallbacks {
   onInterim: (text: string, speaker?: number) => void;
   onFinal: (text: string, speaker?: number) => void;
   onError?: (err: any) => void;
+  onClose?: () => void;
 }
 
 interface ActiveConnection {
@@ -53,6 +54,8 @@ export class DeepgramService implements OnModuleDestroy {
       interim_results: true,
       endpointing: 300,
       diarize: true,
+      filler_words: false,
+      channels: 1,
       // No explicit encoding — Deepgram auto-detects webm/opus from MediaRecorder
     });
 
@@ -99,6 +102,7 @@ export class DeepgramService implements OnModuleDestroy {
 
     connection.on(LiveTranscriptionEvents.Close, () => {
       this.logger.log(`[Deepgram] Stream CLOSED → socket ${socketId}`);
+      callbacks.onClose?.();
       this.cleanupConnection(socketId);
     });
 

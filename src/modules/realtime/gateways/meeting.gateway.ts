@@ -385,6 +385,10 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
           `[Deepgram] Stream error for ${client.id}: ${JSON.stringify(err)}`,
         );
       },
+      onClose: () => {
+        this.logger.warn(`[Deepgram] Stream closed for ${client.id}, notifying client to restart...`);
+        client.emit('transcription-disconnected');
+      },
     });
 
     return { event: 'transcription-started', data: { success: true } };
