@@ -16,8 +16,6 @@ interface ActiveConnection {
   client: ListenLiveClient;
   ready: Promise<void>;
   keepAliveTimer?: ReturnType<typeof setInterval>;
-  /** Set to true when we're intentionally tearing down so we don't auto-reconnect */
-  closing: boolean;
 }
 
 @Injectable()
@@ -32,9 +30,7 @@ export class DeepgramService implements OnModuleDestroy {
   constructor(private readonly config: ConfigService) {
     const key = this.config.get<string>('DEEPGRAM_KEY') ?? '';
     if (!key) {
-      this.logger.warn(
-        '[Deepgram] No DEEPGRAM_KEY configured — transcription will not work',
-      );
+      this.logger.warn('[Deepgram] No DEEPGRAM_KEY configured — transcription will not work');
     }
     this.deepgram = createClient(key);
   }
@@ -49,48 +45,22 @@ export class DeepgramService implements OnModuleDestroy {
       await this.stopStream(socketId);
     }
 
-    /**
-     * Audio parameters must match what the browser sends.
-     *
-     * The client captures at:
-     *   sampleRate  = 16 000 Hz   (set in buildAudioConstraints)
-     *   channelCount = 1          (mono)
-     *   codec        = opus       (default MediaRecorder codec in Chrome/Firefox)
-     *   container    = webm       (MediaRecorder default)
-     *
-     * Deepgram nova-2 options:
-     *   encoding      = "opus"         — explicitly declare the codec
-     *   container     = "webm"         — the MediaRecorder wrapping format
-     *   sample_rate   = 16000          — must match capture sampleRate
-     *   channels      = 1              — must match capture channelCount
-     *
-     * Leaving these unset forces Deepgram to probe each chunk, which adds
-     * latency, occasionally mis-detects the format, and causes the garbled
-     * audio / broken transcription you were seeing.
-     */
     const connection: ListenLiveClient = this.deepgram.listen.live({
       model: 'nova-2',
       language: 'en',
       punctuate: true,
       smart_format: true,
       interim_results: true,
-      // How long (ms) of silence before Deepgram emits a final transcript.
-      // 300 ms gives a good balance of responsiveness vs. sentence completion.
       endpointing: 300,
       diarize: true,
-      // ✅ Explicit encoding — removes ambiguity and is the main fix for garbled audio
-      encoding: 'opus',
-      container: 'webm',
-      sample_rate: 16000,
-      channels: 1,
-      // Utterance end detection — emit a final segment after 1 s of post-speech silence
-      utterance_end_ms: 1000,
+      // No explicit encoding — Deepgram auto-detects webm/opus from MediaRecorder
     });
 
+    // Create a promise that resolves when the WebSocket to Deepgram is open
     const ready = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        reject(new Error('[Deepgram] Connection timed out after 10 s'));
-      }, 10_000);
+        reject(new Error('Deepgram connection timed out after 10s'));
+      }, 10000);
 
       connection.on(LiveTranscriptionEvents.Open, () => {
         clearTimeout(timeout);
@@ -123,78 +93,43 @@ export class DeepgramService implements OnModuleDestroy {
           callbacks.onInterim(transcript.trim(), speaker);
         }
       } catch (err) {
-        this.logger.error(`[Deepgram] Transcript parse error: ${err}`);
+        this.logger.error(`[Deepgram] Error parsing transcript: ${err}`);
       }
     });
 
     connection.on(LiveTranscriptionEvents.Close, () => {
       this.logger.log(`[Deepgram] Stream CLOSED → socket ${socketId}`);
-      const conn = this.connections.get(socketId);
-      if (conn && !conn.closing) {
-        // Unexpected close — log it; the caller should decide whether to restart
-        this.logger.warn(
-          `[Deepgram] Unexpected close for ${socketId}. ` +
-          `Caller should re-invoke startStream() to reconnect.`,
-        );
-        callbacks.onError?.(new Error('Deepgram stream closed unexpectedly'));
-      }
       this.cleanupConnection(socketId);
     });
 
-    // Send keepAlive every 8 seconds to prevent Deepgram from closing the
-    // connection due to inactivity (Deepgram closes after ~10 s of silence).
+    // Send keepAlive every 8 seconds to prevent Deepgram from closing
+    // the connection due to inactivity
     const keepAliveTimer = setInterval(() => {
-      const conn = this.connections.get(socketId);
-      if (!conn || conn.closing) {
-        clearInterval(keepAliveTimer);
-        return;
-      }
       try {
-        conn.client.keepAlive();
+        connection.keepAlive();
       } catch {
-        // Connection already closed; the Close event handler will clean up
+        // Connection already closed, timer will be cleared on cleanup
       }
-    }, 8_000);
+    }, 8000);
 
-    this.connections.set(socketId, {
-      client: connection,
-      ready,
-      keepAliveTimer,
-      closing: false,
-    });
+    this.connections.set(socketId, { client: connection, ready, keepAliveTimer });
 
     // Wait for the connection to be ready before returning
     try {
       await ready;
     } catch (err) {
-      this.logger.error(
-        `[Deepgram] Failed to open stream for ${socketId}: ${err}`,
-      );
+      this.logger.error(`[Deepgram] Failed to open stream for ${socketId}: ${err}`);
       this.cleanupConnection(socketId);
       throw err;
     }
   }
 
   // ── Forward raw audio to Deepgram ────────────────────────────────────
-  /**
-   * Receives a raw Buffer from the gateway (emitted by the browser's
-   * MediaRecorder in webm/opus format) and forwards it to Deepgram.
-   *
-   * IMPORTANT: The caller must only call this AFTER `startStream()` resolves.
-   * Sending audio before the WebSocket to Deepgram is open will silently drop
-   * chunks and cause the "transcription interrupted" symptom.
-   */
   sendAudio(socketId: string, chunk: Buffer): void {
     const conn = this.connections.get(socketId);
-    if (!conn || conn.closing) return;
-
-    if (chunk.byteLength === 0) {
-      this.logger.verbose(`[Deepgram] Skipping empty chunk for ${socketId}`);
-      return;
-    }
-
+    if (!conn) return;
     try {
-      // Cast to `any` to bridge the Node Buffer / DOM Blob type mismatch in the SDK typings
+      // Cast chunk to any to avoid TS type mismatch between Node Buffer and DOM socket types
       conn.client.send(chunk as any);
     } catch (err) {
       this.logger.warn(`[Deepgram] sendAudio error for ${socketId}: ${err}`);
@@ -205,27 +140,15 @@ export class DeepgramService implements OnModuleDestroy {
   async stopStream(socketId: string): Promise<void> {
     const conn = this.connections.get(socketId);
     if (!conn) return;
-
-    // Mark as intentionally closing so the Close event handler doesn't
-    // treat this as an unexpected disconnect
-    conn.closing = true;
-
     try {
       conn.client.requestClose();
     } catch {
-      // Already closed — ignore
+      // already closed
     }
-
     this.cleanupConnection(socketId);
     this.logger.log(`[Deepgram] Stream stopped for socket ${socketId}`);
   }
 
-  // ── Check whether a stream is active ────────────────────────────────
-  isStreamActive(socketId: string): boolean {
-    return this.connections.has(socketId);
-  }
-
-  // ── Internal cleanup ─────────────────────────────────────────────────
   private cleanupConnection(socketId: string): void {
     const conn = this.connections.get(socketId);
     if (conn?.keepAliveTimer) {
