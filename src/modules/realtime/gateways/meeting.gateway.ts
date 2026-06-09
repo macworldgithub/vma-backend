@@ -660,7 +660,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     private readonly jwtService: JwtService,
     private readonly transcriptService: TranscriptService,
     private readonly deepgramService: DeepgramService,
-  ) {}
+  ) { }
 
   // ─── CONNECTION AUTHENTICATION ───────────────────────────────────────
   async handleConnection(client: Socket) {
@@ -1236,6 +1236,24 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     socketUser.roomId = null;
 
     return { event: 'left-room', data: { roomId: data.roomId } };
+  }
+
+  // ─── RAISE HAND ──────────────────────────────────────────────────────
+  @SubscribeMessage('raise-hand')
+  handleRaiseHand(
+    @MessageBody() data: { roomId: string; raisedHand: boolean; userId: string; userName: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const socketUser = this.socketUsers.get(client.id);
+    if (!socketUser) return;
+
+    // Broadcast to everyone ELSE in the room (sender already updated their own state locally)
+    client.to(data.roomId).emit('raise-hand', {
+      userId: socketUser.userId,
+      socketId: client.id,
+      userName: socketUser.userName,
+      raisedHand: data.raisedHand,
+    });
   }
 
   // ─── DISCONNECT ──────────────────────────────────────────────────────
