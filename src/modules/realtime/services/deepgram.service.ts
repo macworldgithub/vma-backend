@@ -233,8 +233,8 @@ export class DeepgramService implements OnModuleDestroy {
       diarize: true,
       filler_words: false,
       channels: 1,
-      encoding: 'opus',
-      sample_rate: 48000,
+      encoding: 'linear16',
+      sample_rate: 16000,
       // Explicitly tell Deepgram the encoding and sample rate to avoid
       // auto-detection failures that cause empty transcripts.
     });
