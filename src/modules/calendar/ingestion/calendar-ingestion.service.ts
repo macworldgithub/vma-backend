@@ -38,7 +38,7 @@ export class CalendarIngestionService {
 
       const meetingData = {
         title: event.summary || 'Untitled Meeting',
-        platform: this.detectPlatform(rawLink),
+        platform: this.detectPlatform(rawLink, 'google'),
         meetingLink: rawLink,
         startTime: event.start?.dateTime || event.start?.date,
         endTime: event.end?.dateTime || event.end?.date,
@@ -99,7 +99,7 @@ export class CalendarIngestionService {
 
       const meetingData = {
         title: event.subject || 'Untitled Meeting',
-        platform: this.detectPlatform(rawLink),
+        platform: this.detectPlatform(rawLink, 'teams'),
         meetingLink: rawLink,
         startTime: event.start?.dateTime || event.start?.date,
         endTime: event.end?.dateTime || event.end?.date,
@@ -164,12 +164,12 @@ export class CalendarIngestionService {
     return match ? match[0] : null;
   }
 
-  private detectPlatform(link: string): string {
-    if (!link) return 'google';
+  private detectPlatform(link: string, defaultPlatform = 'google'): string {
+    if (!link) return defaultPlatform;
     const lowerLink = link.toLowerCase();
     if (lowerLink.includes('teams.microsoft.com')) return 'teams';
     if (lowerLink.includes('zoom.us')) return 'zoom';
     if (lowerLink.includes('meet.google.com')) return 'google';
-    return 'google';
+    return defaultPlatform;
   }
 }
