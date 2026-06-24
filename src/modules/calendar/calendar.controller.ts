@@ -75,4 +75,44 @@ export class CalendarController {
   getGoogleUrl(@Req() req: any) {
     return this.calendarService.getGoogleAuthUrl(req.user.sub);
   }
+
+  // MICROSOFT CALLBACK
+  @Get('microsoft/callback')
+  @ApiOperation({ summary: 'Connect Microsoft Calendar account' })
+  @ApiQuery({
+    name: 'code',
+    required: true,
+    description: 'OAuth authorization code from Microsoft',
+  })
+  @ApiResponse({ status: 200, description: 'Microsoft calendar connected' })
+  @ApiQuery({
+    name: 'state',
+    required: true,
+    description: 'User ID for calendar connection',
+  })
+  async microsoftCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Req() req: any,
+    @Res() res: any,
+  ) {
+    const isAjax = req.headers['accept']?.includes('application/json') || req.headers['x-requested-with'];
+
+    if (!isAjax) {
+      // Direct browser redirect from Microsoft -> redirect to frontend callback page
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}&provider=microsoft`);
+    }
+
+    // AJAX request from the frontend -> exchange code, save token and return JSON
+    const token = await this.calendarService.connectMicrosoft(state, code);
+    return res.json(token);
+  }
+
+  @UseGuards(JwtGuard)
+  @Get('microsoft/url')
+  @ApiOperation({ summary: 'Get Microsoft OAuth URL' })
+  getMicrosoftUrl(@Req() req: any) {
+    return this.calendarService.getMicrosoftAuthUrl(req.user.sub);
+  }
 }

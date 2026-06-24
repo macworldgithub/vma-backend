@@ -73,6 +73,67 @@ export class CalendarIngestionService {
     };
   }
 
+  async ingestMicrosoftEvents(userId: string, events: any[]) {
+    const results: Meeting[] = [];
+
+    for (const event of events) {
+      if (!event.id) continue;
+
+      console.log('DEBUG: RAW MICROSOFT EVENT:', JSON.stringify(event, null, 2));
+
+      // 🔍 1. Check if already exists
+      const existing = await this.meetingModel.findOne({
+        externalEventId: event.id,
+        provider: 'microsoft',
+        createdBy: userId,
+      });
+
+      // 🧠 2. Normalize event → Meeting format
+      const rawLink =
+        event.onlineMeetingUrl ||
+        event.onlineMeeting?.joinUrl ||
+        (this.isValidUrl(event.location?.displayName) ? event.location.displayName : '') ||
+        this.extractUrl(event.body?.content) ||
+        this.findAnyMeetLink(event) ||
+        '';
+
+      const meetingData = {
+        title: event.subject || 'Untitled Meeting',
+        platform: this.detectPlatform(rawLink),
+        meetingLink: rawLink,
+        startTime: event.start?.dateTime || event.start?.date,
+        endTime: event.end?.dateTime || event.end?.date,
+        createdBy: userId,
+        hostId: userId,
+        participants: event.attendees?.map((a: any) => a.emailAddress?.address).filter(Boolean) || [],
+        externalEventId: event.id,
+        source: 'calendar',
+        provider: 'microsoft',
+        lastSyncedAt: new Date(),
+      };
+
+      let saved;
+
+      // 🔄 3. UPSERT logic
+      if (existing) {
+        saved = await this.meetingModel.findByIdAndUpdate(
+          existing._id,
+          meetingData,
+          { new: true },
+        );
+      } else {
+        saved = await this.meetingModel.create(meetingData);
+      }
+
+      results.push(saved);
+    }
+
+    return {
+      ingested: results.length,
+      meetings: results,
+    };
+  }
+
   async getMeetingsForUser(userId: string) {
     return this.meetingModel.find({
       createdBy: userId,

@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { CalendarToken } from './schemas/calendar-token.schema';
 import { GoogleCalendarProvider } from './providers/google-calendar.provider';
-import { calendar_v3 } from 'googleapis';
+import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provider';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 
 @Injectable()
@@ -12,6 +12,7 @@ export class CalendarService {
     @InjectModel(CalendarToken.name)
     private tokenModel: Model<CalendarToken>,
     private googleProvider: GoogleCalendarProvider,
+    private microsoftProvider: MicrosoftCalendarProvider,
     private ingestionService: CalendarIngestionService,
   ) { }
 
@@ -45,26 +46,70 @@ export class CalendarService {
     }
   }
 
+  // CONNECT MICROSOFT
+  async connectMicrosoft(userId: string, code: string) {
+    try {
+      const tokens = await this.microsoftProvider.exchangeCodeForTokens(code);
+      console.log('MICROSOFT TOKENS:', tokens);
+      return await this.tokenModel.findOneAndUpdate(
+        { userId, provider: 'microsoft' },
+        {
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken || undefined,
+          expiryDate: tokens.expiresOn
+            ? new Date(tokens.expiresOn)
+            : new Date(Date.now() + 3600 * 1000),
+        },
+        { upsert: true, new: true },
+      );
+    } catch (error) {
+      console.error('MICROSOFT CONNECT ERROR:', error);
+
+      // Check if we already have a valid token for this user
+      const existingToken = await this.tokenModel.findOne({ userId, provider: 'microsoft' });
+      if (existingToken && existingToken.refreshToken) {
+        console.log('Using existing Microsoft Calendar token after duplicate code exchange attempt.');
+        return existingToken;
+      }
+
+      throw error;
+    }
+  }
+
   // SYNC CALENDAR EVENTS
   async syncCalendar(userId: string) {
-    const token = await this.tokenModel.findOne({ userId });
+    const tokens = await this.tokenModel.find({ userId });
 
-    if (!token) {
-      return { message: 'No calendar connected' };
+    if (!tokens || tokens.length === 0) {
+      return [];
     }
 
-    // Check if token is expired (or close to it)
-    if (token.expiryDate.getTime() < Date.now() + 60000) {
-      if (token.refreshToken) {
+    const results: any[] = [];
+
+    for (const token of tokens) {
+      if (token.provider === 'google') {
         try {
-          const credentials = await this.googleProvider.refreshTokens(token.refreshToken);
-          token.accessToken = credentials.access_token!;
-          if (credentials.expiry_date) {
-            token.expiryDate = new Date(credentials.expiry_date);
+          let currentAccessToken = token.accessToken;
+          if (token.expiryDate.getTime() < Date.now() + 60000) {
+            if (token.refreshToken) {
+              const credentials = await this.googleProvider.refreshTokens(token.refreshToken);
+              currentAccessToken = credentials.access_token!;
+              token.accessToken = currentAccessToken;
+              if (credentials.expiry_date) {
+                token.expiryDate = new Date(credentials.expiry_date);
+              }
+              await token.save();
+            } else {
+              results.push({ provider: 'google', status: 'error', error: 'Token expired and no refresh token available' });
+              continue;
+            }
           }
-          await token.save();
+
+          const events = await this.googleProvider.fetchEvents(currentAccessToken);
+          const ingestResult = await this.ingestionService.ingestGoogleEvents(userId, events);
+          results.push({ provider: 'google', status: 'success', ...ingestResult });
         } catch (error: any) {
-          console.error('Failed to refresh Google token:', error);
+          console.error('Failed to sync Google calendar:', error);
           const errorMsg = error.response?.data?.error || error.message || '';
           const isAuthError =
             errorMsg.includes('invalid_grant') ||
@@ -74,58 +119,81 @@ export class CalendarService {
             error.response?.status === 401;
 
           if (isAuthError) {
-            await this.tokenModel.deleteOne({ userId });
-            throw new UnauthorizedException(
-              'Google Calendar connection has been revoked or expired. Please reconnect.',
-            );
+            await this.tokenModel.deleteOne({ userId, provider: 'google' });
           }
-          throw error;
+          results.push({ provider: 'google', status: 'error', error: error.message });
         }
-      } else {
-        return { message: 'Token expired and no refresh token available' };
+      } else if (token.provider === 'microsoft') {
+        try {
+          let currentAccessToken = token.accessToken;
+          if (token.expiryDate.getTime() < Date.now() + 60000) {
+            if (token.refreshToken) {
+              const credentials = await this.microsoftProvider.refreshTokens(token.refreshToken);
+              currentAccessToken = credentials.accessToken!;
+              token.accessToken = currentAccessToken;
+              if (credentials.refreshToken) {
+                token.refreshToken = credentials.refreshToken;
+              }
+              if (credentials.expiresOn) {
+                token.expiryDate = new Date(credentials.expiresOn);
+              } else {
+                token.expiryDate = new Date(Date.now() + 3600 * 1000);
+              }
+              await token.save();
+            } else {
+              results.push({ provider: 'microsoft', status: 'error', error: 'Token expired and no refresh token available' });
+              continue;
+            }
+          }
+
+          const events = await this.microsoftProvider.fetchEvents(currentAccessToken);
+          const ingestResult = await this.ingestionService.ingestMicrosoftEvents(userId, events);
+          results.push({ provider: 'microsoft', status: 'success', ...ingestResult });
+        } catch (error: any) {
+          console.error('Failed to sync Microsoft calendar:', error);
+          const errorMsg = error.message || '';
+          const isAuthError =
+            errorMsg.includes('invalid_grant') ||
+            errorMsg.includes('Expired') ||
+            error.status === 400 ||
+            error.status === 401 ||
+            error.statusCode === 400 ||
+            error.statusCode === 401;
+
+          if (isAuthError) {
+            await this.tokenModel.deleteOne({ userId, provider: 'microsoft' });
+          }
+          results.push({ provider: 'microsoft', status: 'error', error: error.message });
+        }
       }
     }
 
-    try {
-      const events = await this.googleProvider.fetchEvents(token.accessToken);
-      //  PIPELINE STEP
-      return this.ingestionService.ingestGoogleEvents(userId, events);
-    } catch (error: any) {
-      console.error('Failed to fetch Google events:', error);
-      const errorMsg = error.response?.data?.error || error.message || '';
-      const isAuthError =
-        errorMsg.includes('invalid_grant') ||
-        error.status === 400 ||
-        error.status === 401 ||
-        error.response?.status === 400 ||
-        error.response?.status === 401;
-
-      if (isAuthError) {
-        await this.tokenModel.deleteOne({ userId });
-        throw new UnauthorizedException(
-          'Google Calendar connection has been revoked or expired. Please reconnect.',
-        );
-      }
-      throw error;
-    }
+    return results;
   }
 
   // STORED EVENTS
   async getStoredEvents(userId: string) {
-    const token = await this.tokenModel.findOne({ userId });
-    if (!token) {
+    const tokens = await this.tokenModel.find({ userId });
+    if (!tokens || tokens.length === 0) {
       throw new NotFoundException('No calendar connected');
     }
     const meetings = await this.ingestionService.getMeetingsForUser(userId);
     return {
       count: meetings.length,
       data: meetings,
+      connectedProviders: tokens.map((t) => t.provider),
     };
   }
 
   getGoogleAuthUrl(userId: string) {
     return {
       url: this.googleProvider.getAuthUrl(userId),
+    };
+  }
+
+  getMicrosoftAuthUrl(userId: string) {
+    return {
+      url: this.microsoftProvider.getAuthUrl(userId),
     };
   }
 }

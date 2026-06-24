@@ -6,7 +6,7 @@ export class CalendarToken {
   userId!: string;
 
   @Prop()
-  provider!: 'google' | 'zoom' | 'vma';
+  provider!: 'google' | 'microsoft' | 'zoom' | 'vma';
 
   @Prop()
   accessToken!: string;

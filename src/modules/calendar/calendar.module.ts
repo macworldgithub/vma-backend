@@ -7,6 +7,7 @@ import {
   CalendarTokenSchema,
 } from './schemas/calendar-token.schema';
 import { GoogleCalendarProvider } from './providers/google-calendar.provider';
+import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provider';
 import { AuthModule } from '../auth/auth.module';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
@@ -23,6 +24,7 @@ import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
   providers: [
     CalendarService,
     GoogleCalendarProvider,
+    MicrosoftCalendarProvider,
     CalendarIngestionService,
   ],
 })
