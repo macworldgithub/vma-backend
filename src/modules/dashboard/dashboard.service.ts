@@ -120,13 +120,38 @@ export class DashboardService {
   /**
    * Recent meetings list (last 20)
    */
-  async getRecentMeetings(limit: number = 20) {
-    return this.meetingModel
-      .find()
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .select('title status hostId meetingCode duration createdAt actualStartTime actualEndTime maxParticipants')
-      .lean();
+  async getRecentMeetings(page: number = 1, limit: number = 20, search?: string, status?: string) {
+    const filter: any = {};
+    if (search) {
+      filter.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { meetingCode: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (status && status !== 'all') {
+      filter.status = status;
+    }
+
+    const skip = (page - 1) * limit;
+    
+    const [data, total] = await Promise.all([
+      this.meetingModel
+        .find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select('title status hostId meetingCode duration createdAt actualStartTime actualEndTime maxParticipants')
+        .lean(),
+      this.meetingModel.countDocuments(filter)
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit) || 1
+    };
   }
 
   /**

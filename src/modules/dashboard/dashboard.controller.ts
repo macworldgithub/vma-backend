@@ -59,9 +59,19 @@ export class DashboardController {
     description: 'Number of meetings to return (default: 20)',
   })
   @ApiResponse({ status: 200, description: 'List of recent meetings' })
-  getRecentMeetings(@Query('limit') limit?: string) {
+  getRecentMeetings(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string
+  ) {
+    const pageNumber = page ? parseInt(page, 10) : 1;
+    const limitNumber = limit ? parseInt(limit, 10) : 20;
     return this.dashboardService.getRecentMeetings(
-      limit ? parseInt(limit, 10) : 20,
+      pageNumber,
+      limitNumber,
+      search,
+      status
     );
   }
 

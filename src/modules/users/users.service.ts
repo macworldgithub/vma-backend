@@ -20,8 +20,31 @@ export class UsersService {
     return this.model.findById(id).select('-password');
   }
 
-  findAll() {
-    return this.model.find().select('-password');
+  async findAll(page: number = 1, limit: number = 10, search?: string, role?: string) {
+    const filter: any = {};
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (role && role !== 'all') {
+      filter.role = role;
+    }
+
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      this.model.find(filter).skip(skip).limit(limit).select('-password'),
+      this.model.countDocuments(filter)
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit) || 1
+    };
   }
 
   async createByAdmin(data: { name: string; email: string; password: string; role?: string }) {

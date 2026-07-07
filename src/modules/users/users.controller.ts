@@ -1,4 +1,4 @@
-import { Controller, Get, Post, UseGuards, Req, Patch, Param, Body, Delete } from '@nestjs/common';
+import { Controller, Get, Post, UseGuards, Req, Patch, Param, Body, Delete, Query } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -23,8 +23,15 @@ export class UsersController {
   @Get()
   @UseGuards(JwtGuard, RolesGuard)
   @Roles('admin')
-  getAll() {
-    return this.service.findAll();
+  getAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('search') search?: string,
+    @Query('role') role?: string,
+  ) {
+    const pageNumber = page ? parseInt(page, 10) : 1;
+    const limitNumber = limit ? parseInt(limit, 10) : 10;
+    return this.service.findAll(pageNumber, limitNumber, search, role);
   }
 
   @Post()
