@@ -7,6 +7,7 @@ import { MeetingsModule } from './modules/meetings/meetings.module';
 import { CalendarModule } from './modules/calendar/calendar.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
+import { MediasoupModule } from './modules/mediasoup/mediasoup.module';
 
 
 @Module({
@@ -28,6 +29,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
     CalendarModule,
     RealtimeModule,
     DashboardModule,
+    MediasoupModule,
   ],
 })
-export class AppModule {}
+export class AppModule {}

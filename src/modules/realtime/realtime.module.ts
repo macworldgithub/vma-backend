@@ -7,6 +7,7 @@ import { RoomService } from './services/room.service';
 import { ChatService } from './services/chat.service';
 import { TranscriptService } from './services/transcript.service';
 import { DeepgramService } from './services/deepgram.service';
+import { MediasoupModule } from '../mediasoup/mediasoup.module';
 
 import { Room, RoomSchema } from './schemas/room.schema';
 import { MeetingChat, MeetingChatSchema } from './schemas/meeting-chat.schema';
@@ -17,6 +18,7 @@ import { JwtCommonModule } from 'src/common/jwt.module';
 @Module({
   imports: [
     ConfigModule,
+    MediasoupModule,
     MongooseModule.forFeature([
       { name: Room.name, schema: RoomSchema },
       { name: MeetingChat.name, schema: MeetingChatSchema },
@@ -28,4 +30,5 @@ import { JwtCommonModule } from 'src/common/jwt.module';
   providers: [MeetingGateway, RoomService, ChatService, TranscriptService, DeepgramService],
   exports: [RoomService, ChatService, TranscriptService, DeepgramService],
 })
-export class RealtimeModule {}
+export class RealtimeModule {}
+

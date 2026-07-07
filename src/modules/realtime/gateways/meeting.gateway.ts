@@ -629,9 +629,9 @@ import { RoomService } from '../services/room.service';
 import { ChatService } from '../services/chat.service';
 import { JwtService } from '@nestjs/jwt';
 import { Logger } from '@nestjs/common';
-import { SignalDto } from '../dto/signal.dto';
 import { TranscriptService } from '../services/transcript.service';
 import { DeepgramService } from '../services/deepgram.service';
+import { MediasoupService } from '../../mediasoup/mediasoup.service';
 
 interface SocketUser {
   userId: string;
@@ -660,6 +660,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     private readonly jwtService: JwtService,
     private readonly transcriptService: TranscriptService,
     private readonly deepgramService: DeepgramService,
+    private readonly mediasoupService: MediasoupService,
   ) { }
 
   // ─── CONNECTION AUTHENTICATION ───────────────────────────────────────
@@ -771,6 +772,18 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
         screenSharing: false,
       });
 
+      // ─── Mediasoup: ensure router exists and register peer ───────────
+      const router = await this.mediasoupService.getOrCreateRouter(data.roomId);
+      this.mediasoupService.getOrCreatePeer(data.roomId, client.id, userId);
+
+      // If there was a stale Mediasoup peer (e.g., reconnection), clean it up
+      if (staleParticipant && staleParticipant.socketId !== client.id) {
+        this.mediasoupService.removePeer(data.roomId, staleParticipant.socketId);
+      }
+
+      // Get existing producers from other peers so the joiner knows what to consume
+      const existingProducers = this.mediasoupService.getOtherProducers(data.roomId, client.id);
+
       // Send the joiner the list of everyone already in the room
       return {
         event: 'room-joined',
@@ -780,6 +793,8 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
           socketId: client.id,
           participants: existingParticipants,
           isHost: room.hostId === userId,
+          routerRtpCapabilities: router.rtpCapabilities,
+          existingProducers,
         },
       };
     } catch (error: any) {
@@ -791,60 +806,320 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     }
   }
 
-  // ─── WEBRTC SIGNALING: OFFER ─────────────────────────────────────────
-  @SubscribeMessage('offer')
-  async handleOffer(
-    @MessageBody() data: SignalDto,
+  // ═══════════════════════════════════════════════════════════════════════
+  // MEDIASOUP SFU SIGNALING
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // ─── GET ROUTER RTP CAPABILITIES ────────────────────────────────────
+  @SubscribeMessage('getRouterRtpCapabilities')
+  async handleGetRouterRtpCapabilities(
+    @MessageBody() data: { roomId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const socketUser = this.socketUsers.get(client.id);
-    this.logger.log(`[SIGNAL] Offer: ${client.id} -> ${data.targetSocketId} (Room: ${data.roomId})`);
-
-    // Send offer ONLY to the target peer
-    this.server.to(data.targetSocketId).emit('offer', {
-      fromSocketId: client.id,
-      fromUserId: socketUser?.userId,
-      fromUserName: socketUser?.userName,
-      signal: data.signal,
-      roomId: data.roomId,
-    });
+    try {
+      const router = await this.mediasoupService.getOrCreateRouter(data.roomId);
+      return {
+        event: 'routerRtpCapabilities',
+        data: router.rtpCapabilities,
+      };
+    } catch (error: any) {
+      this.logger.error(`getRouterRtpCapabilities error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
   }
 
-  // ─── WEBRTC SIGNALING: ANSWER ────────────────────────────────────────
-  @SubscribeMessage('answer')
-  async handleAnswer(
-    @MessageBody() data: SignalDto,
+  // ─── CREATE WEBRTC TRANSPORT (send or recv) ─────────────────────────
+  @SubscribeMessage('createWebRtcTransport')
+  async handleCreateWebRtcTransport(
+    @MessageBody() data: { roomId: string; direction: 'send' | 'recv' },
     @ConnectedSocket() client: Socket,
   ) {
-    const socketUser = this.socketUsers.get(client.id);
-    this.logger.log(`[SIGNAL] Answer: ${client.id} -> ${data.targetSocketId} (Room: ${data.roomId})`);
+    try {
+      const socketUser = this.socketUsers.get(client.id);
+      if (!socketUser) throw new Error('Not authenticated');
 
-    // Send answer ONLY to the target peer
-    this.server.to(data.targetSocketId).emit('answer', {
-      fromSocketId: client.id,
-      fromUserId: socketUser?.userId,
-      fromUserName: socketUser?.userName,
-      signal: data.signal,
-      roomId: data.roomId,
-    });
+      // Ensure peer state exists
+      this.mediasoupService.getOrCreatePeer(data.roomId, client.id, socketUser.userId);
+
+      const transport = await this.mediasoupService.createWebRtcTransport(
+        data.roomId,
+        client.id,
+        data.direction,
+      );
+
+      return {
+        event: 'webRtcTransportCreated',
+        data: {
+          id: transport.id,
+          iceParameters: transport.iceParameters,
+          iceCandidates: transport.iceCandidates,
+          dtlsParameters: transport.dtlsParameters,
+        },
+      };
+    } catch (error: any) {
+      this.logger.error(`createWebRtcTransport error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
   }
 
-  // ─── WEBRTC SIGNALING: ICE CANDIDATE ─────────────────────────────────
-  @SubscribeMessage('ice-candidate')
-  async handleIceCandidate(
-    @MessageBody() data: SignalDto,
+  // ─── CONNECT WEBRTC TRANSPORT ───────────────────────────────────────
+  @SubscribeMessage('connectWebRtcTransport')
+  async handleConnectWebRtcTransport(
+    @MessageBody() data: { roomId: string; transportId: string; dtlsParameters: any },
     @ConnectedSocket() client: Socket,
   ) {
-    const socketUser = this.socketUsers.get(client.id);
-    this.logger.debug(`[SIGNAL] ICE: ${client.id} -> ${data.targetSocketId}`);
+    try {
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
 
-    // Send ICE candidate ONLY to the target peer
-    this.server.to(data.targetSocketId).emit('ice-candidate', {
-      fromSocketId: client.id,
-      fromUserId: socketUser?.userId,
-      candidate: data.signal,
-      roomId: data.roomId,
-    });
+      // Find the transport (could be send or recv)
+      const transport =
+        peer.sendTransport?.id === data.transportId
+          ? peer.sendTransport
+          : peer.recvTransport?.id === data.transportId
+            ? peer.recvTransport
+            : null;
+
+      if (!transport) throw new Error(`Transport ${data.transportId} not found`);
+
+      await transport.connect({ dtlsParameters: data.dtlsParameters });
+
+      return { event: 'transportConnected', data: { success: true } };
+    } catch (error: any) {
+      this.logger.error(`connectWebRtcTransport error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── PRODUCE (start sending a media track) ──────────────────────────
+  @SubscribeMessage('produce')
+  async handleProduce(
+    @MessageBody() data: {
+      roomId: string;
+      transportId: string;
+      kind: 'audio' | 'video';
+      rtpParameters: any;
+      appData?: Record<string, any>;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const socketUser = this.socketUsers.get(client.id);
+      if (!socketUser) throw new Error('Not authenticated');
+
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      if (!peer.sendTransport || peer.sendTransport.id !== data.transportId) {
+        throw new Error('Send transport not found or ID mismatch');
+      }
+
+      const producer = await peer.sendTransport.produce({
+        kind: data.kind,
+        rtpParameters: data.rtpParameters,
+        appData: { ...data.appData, userId: socketUser.userId, userName: socketUser.userName },
+      });
+
+      // Track the producer
+      peer.producers.set(producer.id, producer);
+
+      // Handle producer close
+      producer.on('transportclose', () => {
+        peer.producers.delete(producer.id);
+      });
+
+      // Notify all other participants in the room about the new producer
+      client.to(data.roomId).emit('newProducer', {
+        producerId: producer.id,
+        socketId: client.id,
+        userId: socketUser.userId,
+        userName: socketUser.userName,
+        kind: producer.kind,
+        appData: producer.appData,
+      });
+
+      this.logger.log(
+        `[SFU] Producer created: room=${data.roomId}, user=${socketUser.userId}, ` +
+        `kind=${data.kind}, producerId=${producer.id}`,
+      );
+
+      return {
+        event: 'produced',
+        data: { producerId: producer.id },
+      };
+    } catch (error: any) {
+      this.logger.error(`produce error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── CONSUME (start receiving a remote producer) ────────────────────
+  @SubscribeMessage('consume')
+  async handleConsume(
+    @MessageBody() data: { roomId: string; producerId: string; rtpCapabilities: any },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const router = this.mediasoupService.getRouter(data.roomId);
+      if (!router) throw new Error('Router not found');
+
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      if (!peer.recvTransport) throw new Error('Recv transport not created yet');
+
+      // Check if the router can consume this producer with the given RTP capabilities
+      if (!router.canConsume({ producerId: data.producerId, rtpCapabilities: data.rtpCapabilities })) {
+        throw new Error('Cannot consume — incompatible RTP capabilities');
+      }
+
+      const consumer = await peer.recvTransport.consume({
+        producerId: data.producerId,
+        rtpCapabilities: data.rtpCapabilities,
+        paused: true, // Start paused — client must call resumeConsumer
+      });
+
+      // Track the consumer
+      peer.consumers.set(consumer.id, consumer);
+
+      // Handle consumer close events
+      consumer.on('transportclose', () => {
+        peer.consumers.delete(consumer.id);
+      });
+      consumer.on('producerclose', () => {
+        peer.consumers.delete(consumer.id);
+        client.emit('consumerClosed', { consumerId: consumer.id });
+      });
+      consumer.on('producerpause', () => {
+        client.emit('consumerPaused', { consumerId: consumer.id });
+      });
+      consumer.on('producerresume', () => {
+        client.emit('consumerResumed', { consumerId: consumer.id });
+      });
+
+      this.logger.debug(
+        `[SFU] Consumer created: room=${data.roomId}, ` +
+        `consumerId=${consumer.id}, producerId=${data.producerId}`,
+      );
+
+      return {
+        event: 'consumed',
+        data: {
+          consumerId: consumer.id,
+          producerId: data.producerId,
+          kind: consumer.kind,
+          rtpParameters: consumer.rtpParameters,
+          appData: consumer.appData,
+        },
+      };
+    } catch (error: any) {
+      this.logger.error(`consume error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── RESUME CONSUMER ────────────────────────────────────────────────
+  @SubscribeMessage('resumeConsumer')
+  async handleResumeConsumer(
+    @MessageBody() data: { roomId: string; consumerId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      const consumer = peer.consumers.get(data.consumerId);
+      if (!consumer) throw new Error('Consumer not found');
+
+      await consumer.resume();
+
+      return { event: 'consumerResumed', data: { consumerId: data.consumerId } };
+    } catch (error: any) {
+      this.logger.error(`resumeConsumer error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── PAUSE PRODUCER (mute without closing) ──────────────────────────
+  @SubscribeMessage('pauseProducer')
+  async handlePauseProducer(
+    @MessageBody() data: { roomId: string; producerId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      const producer = peer.producers.get(data.producerId);
+      if (!producer) throw new Error('Producer not found');
+
+      await producer.pause();
+
+      // Notify other peers (their consumers will emit 'producerpause' event)
+      this.logger.debug(`[SFU] Producer paused: ${data.producerId}`);
+
+      return { event: 'producerPaused', data: { producerId: data.producerId } };
+    } catch (error: any) {
+      this.logger.error(`pauseProducer error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── RESUME PRODUCER (unmute) ───────────────────────────────────────
+  @SubscribeMessage('resumeProducer')
+  async handleResumeProducer(
+    @MessageBody() data: { roomId: string; producerId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      const producer = peer.producers.get(data.producerId);
+      if (!producer) throw new Error('Producer not found');
+
+      await producer.resume();
+
+      this.logger.debug(`[SFU] Producer resumed: ${data.producerId}`);
+
+      return { event: 'producerResumed', data: { producerId: data.producerId } };
+    } catch (error: any) {
+      this.logger.error(`resumeProducer error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
+  // ─── CLOSE PRODUCER (stop sharing a track) ──────────────────────────
+  @SubscribeMessage('closeProducer')
+  async handleCloseProducer(
+    @MessageBody() data: { roomId: string; producerId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const socketUser = this.socketUsers.get(client.id);
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      const producer = peer.producers.get(data.producerId);
+      if (!producer) throw new Error('Producer not found');
+
+      producer.close();
+      peer.producers.delete(data.producerId);
+
+      // Notify other peers that this producer is gone
+      client.to(data.roomId).emit('producerClosed', {
+        producerId: data.producerId,
+        socketId: client.id,
+        userId: socketUser?.userId,
+      });
+
+      this.logger.log(`[SFU] Producer closed: ${data.producerId}`);
+
+      return { event: 'producerClosed', data: { producerId: data.producerId } };
+    } catch (error: any) {
+      this.logger.error(`closeProducer error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
   }
 
   // ─── MEDIA STATE CHANGE (mute/unmute/camera) ─────────────────────────
@@ -1191,6 +1466,9 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     try {
       await this.roomService.endRoom(data.roomId, socketUser.userId);
 
+      // Close the entire Mediasoup room (router + all transports/producers/consumers)
+      this.mediasoupService.closeRoom(data.roomId);
+
       // Notify ALL participants that meeting has ended
       this.server.to(data.roomId).emit('meeting-ended', {
         endedBy: socketUser.userName,
@@ -1220,6 +1498,16 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
     // Stop Deepgram stream when user explicitly leaves
     await this.deepgramService.stopStream(client.id);
+
+    // Clean up Mediasoup peer state (transports, producers, consumers)
+    const closedProducerIds = this.mediasoupService.removePeer(data.roomId, client.id);
+    for (const producerId of closedProducerIds) {
+      client.to(data.roomId).emit('producerClosed', {
+        producerId,
+        socketId: client.id,
+        userId: socketUser.userId,
+      });
+    }
 
     await this.roomService.leaveRoom(data.roomId, socketUser.userId);
 
@@ -1267,6 +1555,16 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     const result = await this.roomService.leaveRoomBySocketId(client.id);
 
     if (result) {
+      // Clean up Mediasoup peer state
+      const closedProducerIds = this.mediasoupService.removePeer(result.room.roomId, client.id);
+      for (const producerId of closedProducerIds) {
+        this.server.to(result.room.roomId).emit('producerClosed', {
+          producerId,
+          socketId: client.id,
+          userId: result.userId,
+        });
+      }
+
       // Notify room participants that user left
       this.server.to(result.room.roomId).emit('user-left', {
         userId: result.userId,
