@@ -41,11 +41,6 @@ export class MediasoupService implements OnModuleInit, OnModuleDestroy {
   private maxPort!: number;
   private numWorkers!: number;
 
-  private turnUrl!: string;
-  private turnUsername!: string;
-  private turnPassword!: string;
-  private stunUrl!: string;
-
   constructor(private readonly config: ConfigService) {}
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -58,10 +53,6 @@ export class MediasoupService implements OnModuleInit, OnModuleDestroy {
     this.minPort = parseInt(this.config.get<string>('MEDIASOUP_MIN_PORT') || '40000', 10);
     this.maxPort = parseInt(this.config.get<string>('MEDIASOUP_MAX_PORT') || '49999', 10);
     this.numWorkers = parseInt(this.config.get<string>('MEDIASOUP_NUM_WORKERS') || '2', 10);
-    this.stunUrl = this.config.get<string>('STUN_URL') || 'stun:stun.l.google.com:19302';
-    this.turnUrl = this.config.get<string>('TURN_URL') || '';
-    this.turnUsername = this.config.get<string>('TURN_USERNAME') || '';
-    this.turnPassword = this.config.get<string>('TURN_PASSWORD') || '';
 
     if (!this.announcedIp) {
       this.logger.warn(
@@ -235,15 +226,31 @@ export class MediasoupService implements OnModuleInit, OnModuleDestroy {
   }
 
   getIceServers(): any[] {
-    const servers: any[] = [{ urls: this.stunUrl }];
-    if (this.turnUrl) {
-      servers.push({
-        urls: this.turnUrl.startsWith('turn:') ? this.turnUrl : `turn:${this.turnUrl}`,
-        username: this.turnUsername,
-        credential: this.turnPassword,
-      });
-    }
-    return servers;
+    return [
+      {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+    ];
   }
 
   // ═══════════════════════════════════════════════════════════════════════

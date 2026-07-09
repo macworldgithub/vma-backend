@@ -40,33 +40,31 @@ export class MeetingsController {
   @ApiOperation({ summary: 'Get STUN/TURN server configuration for WebRTC' })
   @ApiResponse({ status: 200, description: 'ICE server configuration' })
   getIceServers() {
-    const servers: any[] = [];
-
-    let stunUrl = this.configService.get<string>('STUN_URL');
-    if (stunUrl) {
-      if (!stunUrl.startsWith('stun:') && !stunUrl.startsWith('stuns:')) {
-        stunUrl = `stun:${stunUrl}`;
-      }
-      servers.push({ urls: stunUrl });
-    }
-
-    let turnUrl = this.configService.get<string>('TURN_URL');
-    if (turnUrl) {
-      if (!turnUrl.startsWith('turn:') && !turnUrl.startsWith('turns:')) {
-        turnUrl = `turn:${turnUrl}`;
-      }
-      servers.push({
-        urls: turnUrl,
-        username: this.configService.get('TURN_USERNAME'),
-        credential: this.configService.get('TURN_PASSWORD'),
-      });
-    }
-
-    // Always include Google STUN as fallback
-    if (servers.length === 0) {
-      servers.push({ urls: 'stun:stun.l.google.com:19302' });
-      servers.push({ urls: 'stun:stun1.l.google.com:19302' });
-    }
+    const servers: any[] = [
+      {
+        urls: "stun:stun.relay.metered.ca:80",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "0da55795225b9490c2222dc6",
+        credential: "hfVkF8auvkjku7JC",
+      },
+    ];
 
     return { iceServers: servers };
   }
