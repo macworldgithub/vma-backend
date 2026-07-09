@@ -946,7 +946,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
         `kind=${data.kind}, producerId=${producer.id}`,
       );
 
-      return { producerId: producer.id };
+      return { id: producer.id, producerId: producer.id };
     } catch (error: any) {
       this.logger.error(`produce error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -1005,6 +1005,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       );
 
       return {
+        id: consumer.id,
         consumerId: consumer.id,
         producerId: data.producerId,
         kind: consumer.kind,
