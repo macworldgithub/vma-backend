@@ -217,7 +217,7 @@ export class RoomService {
     const room = await this.roomModel.findOneAndUpdate(
       { roomId, 'participants.userId': userId },
       { $set: updateQuery },
-      { new: true }
+      { returnDocument: 'after' }
     );
 
     if (!room) return null;

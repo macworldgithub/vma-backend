@@ -848,14 +848,11 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       );
 
       return {
-        event: 'webRtcTransportCreated',
-        data: {
-          id: transport.id,
-          iceParameters: transport.iceParameters,
-          iceCandidates: transport.iceCandidates,
-          dtlsParameters: transport.dtlsParameters,
-          iceServers: this.mediasoupService.getIceServers(),
-        },
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+        iceServers: this.mediasoupService.getIceServers(),
       };
     } catch (error: any) {
       this.logger.error(`createWebRtcTransport error: ${error.message}`);
@@ -886,7 +883,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       await transport.connect({ dtlsParameters: data.dtlsParameters });
       this.logger.debug(`[WebRTC] Transport connected successfully: ${data.transportId}`);
 
-      return { event: 'transportConnected', data: { success: true } };
+      return { success: true };
     } catch (error: any) {
       this.logger.error(`connectWebRtcTransport error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -949,10 +946,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
         `kind=${data.kind}, producerId=${producer.id}`,
       );
 
-      return {
-        event: 'produced',
-        data: { producerId: producer.id },
-      };
+      return { producerId: producer.id };
     } catch (error: any) {
       this.logger.error(`produce error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -1011,14 +1005,11 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       );
 
       return {
-        event: 'consumed',
-        data: {
-          consumerId: consumer.id,
-          producerId: data.producerId,
-          kind: consumer.kind,
-          rtpParameters: consumer.rtpParameters,
-          appData: consumer.appData,
-        },
+        consumerId: consumer.id,
+        producerId: data.producerId,
+        kind: consumer.kind,
+        rtpParameters: consumer.rtpParameters,
+        appData: consumer.appData,
       };
     } catch (error: any) {
       this.logger.error(`consume error: ${error.message}`);
@@ -1041,7 +1032,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
       await consumer.resume();
 
-      return { event: 'consumerResumed', data: { consumerId: data.consumerId } };
+      return { consumerId: data.consumerId };
     } catch (error: any) {
       this.logger.error(`resumeConsumer error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -1066,7 +1057,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       // Notify other peers (their consumers will emit 'producerpause' event)
       this.logger.debug(`[SFU] Producer paused: ${data.producerId}`);
 
-      return { event: 'producerPaused', data: { producerId: data.producerId } };
+      return { producerId: data.producerId };
     } catch (error: any) {
       this.logger.error(`pauseProducer error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -1090,7 +1081,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
       this.logger.debug(`[SFU] Producer resumed: ${data.producerId}`);
 
-      return { event: 'producerResumed', data: { producerId: data.producerId } };
+      return { producerId: data.producerId };
     } catch (error: any) {
       this.logger.error(`resumeProducer error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
@@ -1123,7 +1114,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
 
       this.logger.log(`[SFU] Producer closed: ${data.producerId}`);
 
-      return { event: 'producerClosed', data: { producerId: data.producerId } };
+      return { producerId: data.producerId };
     } catch (error: any) {
       this.logger.error(`closeProducer error: ${error.message}`);
       return { event: 'error', data: { message: error.message } };
