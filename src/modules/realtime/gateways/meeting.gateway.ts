@@ -854,6 +854,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
           iceParameters: transport.iceParameters,
           iceCandidates: transport.iceCandidates,
           dtlsParameters: transport.dtlsParameters,
+          iceServers: this.mediasoupService.getIceServers(),
         },
       };
     } catch (error: any) {
