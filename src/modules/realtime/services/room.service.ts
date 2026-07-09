@@ -214,18 +214,21 @@ export class RoomService {
     userId: string,
     state: { audioEnabled?: boolean; videoEnabled?: boolean; screenSharing?: boolean },
   ) {
-    const room = await this.roomModel.findOne({ roomId });
+    const updateQuery: any = {};
+    if (state.audioEnabled !== undefined) updateQuery['participants.$.audioEnabled'] = state.audioEnabled;
+    if (state.videoEnabled !== undefined) updateQuery['participants.$.videoEnabled'] = state.videoEnabled;
+    if (state.screenSharing !== undefined) updateQuery['participants.$.screenSharing'] = state.screenSharing;
+
+    if (Object.keys(updateQuery).length === 0) return null;
+
+    const room = await this.roomModel.findOneAndUpdate(
+      { roomId, 'participants.userId': userId },
+      { $set: updateQuery },
+      { new: true }
+    );
+
     if (!room) return null;
-
-    const participant = room.participants.find((p) => p.userId === userId);
-    if (!participant) return null;
-
-    if (state.audioEnabled !== undefined) participant.audioEnabled = state.audioEnabled;
-    if (state.videoEnabled !== undefined) participant.videoEnabled = state.videoEnabled;
-    if (state.screenSharing !== undefined) participant.screenSharing = state.screenSharing;
-
-    await room.save();
-    return participant;
+    return room.participants.find((p) => p.userId === userId);
   }
 
   /**
