@@ -1526,6 +1526,29 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
     return { event: 'left-room', data: { roomId: data.roomId } };
   }
 
+  @SubscribeMessage('restartIce')
+  async handleRestartIce(
+    @MessageBody() data: { roomId: string; transportId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const peer = this.mediasoupService.getPeer(data.roomId, client.id);
+      if (!peer) throw new Error('Peer not found');
+
+      const transport =
+        peer.sendTransport?.id === data.transportId ? peer.sendTransport
+          : peer.recvTransport?.id === data.transportId ? peer.recvTransport
+            : null;
+      if (!transport) throw new Error('Transport not found');
+
+      const iceParameters = await transport.restartIce();
+      return { iceParameters };
+    } catch (error: any) {
+      this.logger.error(`restartIce error: ${error.message}`);
+      return { event: 'error', data: { message: error.message } };
+    }
+  }
+
   // ─── RAISE HAND ──────────────────────────────────────────────────────
   @SubscribeMessage('raise-hand')
   handleRaiseHand(

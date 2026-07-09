@@ -41,7 +41,7 @@ export class MediasoupService implements OnModuleInit, OnModuleDestroy {
   private maxPort!: number;
   private numWorkers!: number;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService) { }
 
   // ═══════════════════════════════════════════════════════════════════════
   // Lifecycle
@@ -191,17 +191,15 @@ export class MediasoupService implements OnModuleInit, OnModuleDestroy {
     if (!peer) throw new Error(`No peer state for socket ${socketId} in room ${roomId}`);
 
     const transport = await router.createWebRtcTransport({
-      listenIps: [
-        {
-          ip: this.listenIp,
-          announcedIp: this.announcedIp || undefined,
-        },
-      ],
+      listenIps: [{ ip: this.listenIp, announcedIp: this.announcedIp || undefined }],
       enableUdp: true,
       enableTcp: true,
       preferUdp: true,
-      initialAvailableOutgoingBitrate: 1_000_000,
+      initialAvailableOutgoingBitrate: 2_500_000, // was 1_000_000
     });
+
+    // Also raise the transport's max outgoing bitrate ceiling after creation:
+    await transport.setMaxIncomingBitrate(3_000_000).catch(() => { });
 
     // Track the transport
     if (direction === 'send') {
