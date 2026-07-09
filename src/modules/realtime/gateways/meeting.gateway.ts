@@ -884,6 +884,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       if (!transport) throw new Error(`Transport ${data.transportId} not found`);
 
       await transport.connect({ dtlsParameters: data.dtlsParameters });
+      this.logger.debug(`[WebRTC] Transport connected successfully: ${data.transportId}`);
 
       return { event: 'transportConnected', data: { success: true } };
     } catch (error: any) {
@@ -921,13 +922,17 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
         appData: { ...data.appData, userId: socketUser.userId, userName: socketUser.userName },
       });
 
-      // Track the producer
+      // Track it
       peer.producers.set(producer.id, producer);
 
-      // Handle producer close
+      // Handle close
       producer.on('transportclose', () => {
+        this.logger.debug(`[WebRTC] Producer transport closed: ${producer.id}`);
+        producer.close();
         peer.producers.delete(producer.id);
       });
+
+      this.logger.debug(`[WebRTC] Produced ${data.kind} track (id: ${producer.id}) on transport ${data.transportId}`);
 
       // Notify all other participants in the room about the new producer
       client.to(data.roomId).emit('newProducer', {
@@ -983,13 +988,15 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
       // Track the consumer
       peer.consumers.set(consumer.id, consumer);
 
-      // Handle consumer close events
+      // Handle close
       consumer.on('transportclose', () => {
+        this.logger.debug(`[WebRTC] Consumer transport closed: ${consumer.id}`);
         peer.consumers.delete(consumer.id);
       });
       consumer.on('producerclose', () => {
+        this.logger.debug(`[WebRTC] Producer closed, closing consumer: ${consumer.id}`);
         peer.consumers.delete(consumer.id);
-        client.emit('consumerClosed', { consumerId: consumer.id });
+        client.emit('producerClosed', { producerId: data.producerId, socketId: client.id });
       });
       consumer.on('producerpause', () => {
         client.emit('consumerPaused', { consumerId: consumer.id });

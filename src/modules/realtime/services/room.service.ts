@@ -113,14 +113,11 @@ export class RoomService {
    * Remove a participant from the room
    */
   async leaveRoom(roomId: string, userId: string) {
-    const room = await this.roomModel.findOne({ roomId });
-    if (!room) return null;
-
-    room.participants = room.participants.filter(
-      (p) => p.userId !== userId,
+    const room = await this.roomModel.findOneAndUpdate(
+      { roomId },
+      { $pull: { participants: { userId } } },
+      { returnDocument: 'after' }
     );
-
-    await room.save();
     return room;
   }
 
@@ -128,20 +125,16 @@ export class RoomService {
    * Remove a participant by socketId (used on disconnect)
    */
   async leaveRoomBySocketId(socketId: string) {
-    const room = await this.roomModel.findOne({
-      'participants.socketId': socketId,
-    });
+    const room = await this.roomModel.findOneAndUpdate(
+      { 'participants.socketId': socketId },
+      { $pull: { participants: { socketId } } },
+      { returnDocument: 'before' }
+    );
 
     if (!room) return null;
 
     const participant = room.participants.find((p) => p.socketId === socketId);
     if (!participant) return null;
-
-    room.participants = room.participants.filter(
-      (p) => p.socketId !== socketId,
-    );
-
-    await room.save();
 
     return {
       room,
