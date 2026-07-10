@@ -34,7 +34,7 @@ export class MeetingsController {
     private roomService: RoomService,
     private chatService: ChatService,
     private configService: ConfigService,
-  ) {}
+  ) { }
 
   @Get('ice-servers')
   @ApiOperation({ summary: 'Get STUN/TURN server configuration for WebRTC' })
@@ -125,6 +125,7 @@ export class MeetingsController {
       meetingCode: code,
       roomId: room?.roomId,
       roomStatus: room?.status,
+      isLocked: room?.isLocked,
       participantCount: room?.participants?.length || 0,
       maxParticipants: meeting.maxParticipants,
     };
