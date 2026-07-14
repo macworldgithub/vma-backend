@@ -16,6 +16,14 @@ export class CalendarToken {
 
   @Prop()
   expiryDate!: Date;
+
+  /** The email (UPN) of the Microsoft account that actually authenticated */
+  @Prop({ required: false })
+  microsoftEmail?: string;
+
+  /** The Object ID (oid) of the Microsoft account that actually authenticated */
+  @Prop({ required: false })
+  microsoftUserId?: string;
 }
 
 export const CalendarTokenSchema = SchemaFactory.createForClass(CalendarToken);

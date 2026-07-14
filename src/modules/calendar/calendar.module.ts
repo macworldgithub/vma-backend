@@ -11,6 +11,7 @@ import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provid
 import { AuthModule } from '../auth/auth.module';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
+import { UsersModule } from '../users/users.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
       { name: Meeting.name, schema: MeetingSchema },
     ]),
     AuthModule,
+    UsersModule,
   ],
   controllers: [CalendarController],
   providers: [
@@ -28,4 +30,4 @@ import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
     CalendarIngestionService,
   ],
 })
-export class CalendarModule { }
+export class CalendarModule { }

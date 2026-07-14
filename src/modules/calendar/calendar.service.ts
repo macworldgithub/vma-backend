@@ -1,19 +1,23 @@
-import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { CalendarToken } from './schemas/calendar-token.schema';
 import { GoogleCalendarProvider } from './providers/google-calendar.provider';
 import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provider';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class CalendarService {
+  private readonly logger = new Logger(CalendarService.name);
+
   constructor(
     @InjectModel(CalendarToken.name)
     private tokenModel: Model<CalendarToken>,
     private googleProvider: GoogleCalendarProvider,
     private microsoftProvider: MicrosoftCalendarProvider,
     private ingestionService: CalendarIngestionService,
+    private usersService: UsersService,
   ) { }
 
   // CONNECT GOOGLE
@@ -50,7 +54,33 @@ export class CalendarService {
   async connectMicrosoft(userId: string, code: string) {
     try {
       const tokens = await this.microsoftProvider.exchangeCodeForTokens(code);
-      console.log('MICROSOFT TOKENS:', tokens);
+      this.logger.log(`MICROSOFT TOKENS received for userId=${userId}`);
+
+      // --- Identity mismatch detection ---
+      // Look up the VMA user to compare emails
+      const vmaUser = await this.usersService.findById(userId);
+      if (vmaUser && tokens.microsoftEmail) {
+        const vmaEmail = vmaUser.email.toLowerCase().trim();
+        const msEmail = tokens.microsoftEmail.toLowerCase().trim();
+
+        if (vmaEmail !== msEmail) {
+          this.logger.warn(
+            `⚠️  MICROSOFT IDENTITY MISMATCH DETECTED!\n` +
+            `   VMA User: ${vmaUser.name} (${vmaEmail})\n` +
+            `   Microsoft Account: ${msEmail}\n` +
+            `   The calendar will sync events from the Microsoft account (${msEmail}),\n` +
+            `   NOT from the VMA user's expected mailbox (${vmaEmail}).\n` +
+            `   The user likely signed in with the wrong Microsoft account during OAuth.`
+          );
+          // Throw an error to prevent saving the wrong account's token
+          throw new BadRequestException(
+            `Microsoft account mismatch: You signed in as "${tokens.microsoftEmail}" ` +
+            `but this VMA account is for "${vmaUser.email}". ` +
+            `Please sign in with the correct Microsoft account.`
+          );
+        }
+      }
+
       return await this.tokenModel.findOneAndUpdate(
         { userId, provider: 'microsoft' },
         {
@@ -59,10 +89,17 @@ export class CalendarService {
           expiryDate: tokens.expiresOn
             ? new Date(tokens.expiresOn)
             : new Date(Date.now() + 3600 * 1000),
+          microsoftEmail: tokens.microsoftEmail,
+          microsoftUserId: tokens.microsoftUserId,
         },
         { upsert: true, new: true },
       );
     } catch (error) {
+      // Re-throw BadRequestException (identity mismatch) directly
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
       console.error('MICROSOFT CONNECT ERROR:', error);
 
       // Check if we already have a valid token for this user
@@ -139,6 +176,13 @@ export class CalendarService {
               } else {
                 token.expiryDate = new Date(Date.now() + 3600 * 1000);
               }
+              // Update identity fields on refresh
+              if (credentials.microsoftEmail) {
+                token.microsoftEmail = credentials.microsoftEmail;
+              }
+              if (credentials.microsoftUserId) {
+                token.microsoftUserId = credentials.microsoftUserId;
+              }
               await token.save();
             } else {
               results.push({ provider: 'microsoft', status: 'error', error: 'Token expired and no refresh token available' });
@@ -146,9 +190,19 @@ export class CalendarService {
             }
           }
 
+          // Log which Microsoft account is being used for sync
+          if (token.microsoftEmail) {
+            this.logger.log(`Syncing Microsoft calendar for VMA userId=${userId}, Microsoft account=${token.microsoftEmail}`);
+          }
+
           const events = await this.microsoftProvider.fetchEvents(currentAccessToken);
           const ingestResult = await this.ingestionService.ingestMicrosoftEvents(userId, events);
-          results.push({ provider: 'microsoft', status: 'success', ...ingestResult });
+          results.push({
+            provider: 'microsoft',
+            status: 'success',
+            microsoftAccount: token.microsoftEmail || 'unknown',
+            ...ingestResult,
+          });
         } catch (error: any) {
           console.error('Failed to sync Microsoft calendar:', error);
           const errorMsg = error.message || '';
@@ -181,7 +235,10 @@ export class CalendarService {
     return {
       count: meetings.length,
       data: meetings,
-      connectedProviders: tokens.map((t) => t.provider),
+      connectedProviders: tokens.map((t) => ({
+        provider: t.provider,
+        microsoftAccount: t.provider === 'microsoft' ? t.microsoftEmail || 'unknown' : undefined,
+      })),
     };
   }
 
@@ -191,9 +248,14 @@ export class CalendarService {
     };
   }
 
-  getMicrosoftAuthUrl(userId: string) {
+  async getMicrosoftAuthUrl(userId: string) {
+    // Look up the VMA user's email to use as login_hint
+    const user = await this.usersService.findById(userId);
+    const loginHint = user?.email;
+
     return {
-      url: this.microsoftProvider.getAuthUrl(userId),
+      url: this.microsoftProvider.getAuthUrl(userId, loginHint),
     };
   }
 }
+
