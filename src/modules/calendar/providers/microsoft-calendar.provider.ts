@@ -108,8 +108,8 @@ export class MicrosoftCalendarProvider {
 
     // Extract the actual Microsoft identity from the access token
     const claims = this.decodeJwtPayload(tokenResponse.accessToken);
-    const microsoftEmail = claims?.upn || claims?.unique_name || claims?.preferred_username || undefined;
-    const microsoftUserId = claims?.oid || undefined;
+    const microsoftEmail = tokenResponse.account?.username || claims?.upn || claims?.unique_name || claims?.preferred_username || undefined;
+    const microsoftUserId = tokenResponse.account?.homeAccountId || claims?.oid || undefined;
 
     if (microsoftEmail) {
       this.logger.log(`Microsoft OAuth completed for: ${microsoftEmail} (oid: ${microsoftUserId})`);
@@ -145,8 +145,8 @@ export class MicrosoftCalendarProvider {
     const newRefreshToken = this.getRefreshTokenFromCache() || refreshToken;
 
     const claims = this.decodeJwtPayload(tokenResponse.accessToken);
-    const microsoftEmail = claims?.upn || claims?.unique_name || claims?.preferred_username || undefined;
-    const microsoftUserId = claims?.oid || undefined;
+    const microsoftEmail = tokenResponse.account?.username || claims?.upn || claims?.unique_name || claims?.preferred_username || undefined;
+    const microsoftUserId = tokenResponse.account?.homeAccountId || claims?.oid || undefined;
 
     return {
       accessToken: tokenResponse.accessToken,
@@ -165,8 +165,18 @@ export class MicrosoftCalendarProvider {
       },
     });
 
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const endOfRange = new Date(startOfToday);
+    endOfRange.setFullYear(endOfRange.getFullYear() + 1);
+
     const events = await client
-      .api('/me/events')
+      .api('/me/calendarView')
+      .query({
+        startDateTime: startOfToday.toISOString(),
+        endDateTime: endOfRange.toISOString(),
+      })
       .top(50)
       .orderby('start/dateTime')
       .get();
