@@ -192,13 +192,15 @@ export class CalendarIngestionService {
   }
 
   async getMeetingsForUser(userId: string) {
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    const now = new Date();
 
     return this.meetingModel.find({
       createdBy: userId,
       source: 'calendar',
-      startTime: { $gte: startOfToday },
+      $or: [
+        { endTime: { $gte: now } },
+        { startTime: { $gte: now } }
+      ]
     }).sort({ startTime: 1 });
   }
 
