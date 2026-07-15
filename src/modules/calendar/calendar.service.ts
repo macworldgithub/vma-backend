@@ -69,15 +69,9 @@ export class CalendarService {
             `   VMA User: ${vmaUser.name} (${vmaEmail})\n` +
             `   Microsoft Account: ${msEmail}\n` +
             `   The calendar will sync events from the Microsoft account (${msEmail}),\n` +
-            `   NOT from the VMA user's expected mailbox (${vmaEmail}).\n` +
-            `   The user likely signed in with the wrong Microsoft account during OAuth.`
+            `   NOT from the VMA user's expected mailbox (${vmaEmail}).`
           );
-          // Throw an error to prevent saving the wrong account's token
-          throw new BadRequestException(
-            `Microsoft account mismatch: You signed in as "${tokens.microsoftEmail}" ` +
-            `but this VMA account is for "${vmaUser.email}". ` +
-            `Please sign in with the correct Microsoft account.`
-          );
+          // We allow this now as per client request. The mismatched account will be successfully connected.
         }
       }
 
