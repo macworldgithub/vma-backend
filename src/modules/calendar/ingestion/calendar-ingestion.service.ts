@@ -122,12 +122,21 @@ export class CalendarIngestionService {
         this.findAnyMeetLink(event) ||
         '';
 
+      const parseMSDate = (dateObj: any) => {
+        if (!dateObj) return undefined;
+        if (dateObj.dateTime) {
+          const dt = dateObj.dateTime;
+          return new Date(dt.endsWith('Z') ? dt : dt + 'Z');
+        }
+        return dateObj.date ? new Date(dateObj.date) : undefined;
+      };
+
       const meetingData = {
         title: event.subject || 'Untitled Meeting',
         platform: this.detectPlatform(rawLink, 'teams'),
         meetingLink: rawLink,
-        startTime: event.start?.dateTime || event.start?.date,
-        endTime: event.end?.dateTime || event.end?.date,
+        startTime: parseMSDate(event.start),
+        endTime: parseMSDate(event.end),
         createdBy: userId,
         hostId: userId,
         participants: event.attendees?.map((a: any) => a.emailAddress?.address).filter(Boolean) || [],
@@ -183,10 +192,14 @@ export class CalendarIngestionService {
   }
 
   async getMeetingsForUser(userId: string) {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
     return this.meetingModel.find({
       createdBy: userId,
       source: 'calendar',
-    }).sort({ startTime: -1 });
+      startTime: { $gte: startOfToday },
+    }).sort({ startTime: 1 });
   }
 
   private isValidUrl(text: string): boolean {
