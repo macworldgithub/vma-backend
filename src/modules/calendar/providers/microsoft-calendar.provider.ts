@@ -173,16 +173,29 @@ export class MicrosoftCalendarProvider {
     const endOfRange = new Date();
     endOfRange.setFullYear(endOfRange.getFullYear() + 1);
 
-    const events = await client
+    let allEvents: any[] = [];
+    
+    let response = await client
       .api('/me/calendarView')
       .query({
         startDateTime: startOfRange.toISOString(),
         endDateTime: endOfRange.toISOString(),
       })
-      .top(50)
+      .top(100)
       .orderby('start/dateTime')
       .get();
 
-    return events.value || [];
+    if (response.value) {
+      allEvents = allEvents.concat(response.value);
+    }
+
+    while (response['@odata.nextLink']) {
+      response = await client.api(response['@odata.nextLink']).get();
+      if (response.value) {
+        allEvents = allEvents.concat(response.value);
+      }
+    }
+
+    return allEvents;
   }
 }

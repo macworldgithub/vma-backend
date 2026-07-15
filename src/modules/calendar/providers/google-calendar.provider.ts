@@ -46,16 +46,27 @@ export class GoogleCalendarProvider {
     startOfRange.setDate(startOfRange.getDate() - 30);
     startOfRange.setHours(0, 0, 0, 0);
 
-    const res: any = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: startOfRange.toISOString(),
-      maxResults: 50,
-      singleEvents: true,
-      orderBy: 'startTime',
-      conferenceDataVersion: 1,
-    } as any);
+    let allEvents: any[] = [];
+    let pageToken = undefined;
 
-    return res.data.items || [];
+    do {
+      const res: any = await calendar.events.list({
+        calendarId: 'primary',
+        timeMin: startOfRange.toISOString(),
+        maxResults: 250,
+        singleEvents: true,
+        orderBy: 'startTime',
+        conferenceDataVersion: 1,
+        pageToken: pageToken,
+      } as any);
+
+      if (res.data.items) {
+        allEvents = allEvents.concat(res.data.items);
+      }
+      pageToken = res.data.nextPageToken;
+    } while (pageToken);
+
+    return allEvents;
   }
 
   async refreshTokens(refreshToken: string) {
