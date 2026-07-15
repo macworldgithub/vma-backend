@@ -42,12 +42,13 @@ export class GoogleCalendarProvider {
       auth: this.oauthClient,
     });
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    const startOfRange = new Date();
+    startOfRange.setDate(startOfRange.getDate() - 30);
+    startOfRange.setHours(0, 0, 0, 0);
 
     const res: any = await calendar.events.list({
       calendarId: 'primary',
-      timeMin: startOfToday.toISOString(),
+      timeMin: startOfRange.toISOString(),
       maxResults: 50,
       singleEvents: true,
       orderBy: 'startTime',

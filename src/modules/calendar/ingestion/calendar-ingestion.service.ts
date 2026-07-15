@@ -67,6 +67,31 @@ export class CalendarIngestionService {
       results.push(saved);
     }
 
+    // 🗑 4. DELETE events that no longer exist in the provider
+    // We only delete events that match the sync window (e.g., from 30 days ago)
+    const incomingIds = events.map((e) => e.id).filter(Boolean);
+    const syncStartTime = new Date();
+    syncStartTime.setDate(syncStartTime.getDate() - 30);
+    syncStartTime.setHours(0, 0, 0, 0);
+
+    if (incomingIds.length > 0) {
+      await this.meetingModel.deleteMany({
+        createdBy: userId,
+        provider: 'google',
+        source: 'calendar',
+        startTime: { $gte: syncStartTime },
+        externalEventId: { $nin: incomingIds },
+      });
+    } else {
+      // If no incoming events at all, but we fetched successfully, it means calendar is empty for this period
+      await this.meetingModel.deleteMany({
+        createdBy: userId,
+        provider: 'google',
+        source: 'calendar',
+        startTime: { $gte: syncStartTime },
+      });
+    }
+
     return {
       ingested: results.length,
       meetings: results,
@@ -126,6 +151,29 @@ export class CalendarIngestionService {
       }
 
       results.push(saved);
+    }
+
+    // 🗑 4. DELETE events that no longer exist in the provider
+    const incomingIds = events.map((e) => e.id).filter(Boolean);
+    const syncStartTime = new Date();
+    syncStartTime.setDate(syncStartTime.getDate() - 30);
+    syncStartTime.setHours(0, 0, 0, 0);
+
+    if (incomingIds.length > 0) {
+      await this.meetingModel.deleteMany({
+        createdBy: userId,
+        provider: 'microsoft',
+        source: 'calendar',
+        startTime: { $gte: syncStartTime },
+        externalEventId: { $nin: incomingIds },
+      });
+    } else {
+      await this.meetingModel.deleteMany({
+        createdBy: userId,
+        provider: 'microsoft',
+        source: 'calendar',
+        startTime: { $gte: syncStartTime },
+      });
     }
 
     return {

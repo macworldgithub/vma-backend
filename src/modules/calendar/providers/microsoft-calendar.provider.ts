@@ -75,6 +75,7 @@ export class MicrosoftCalendarProvider {
       response_mode: 'query',
       scope: 'offline_access User.Read Calendars.Read OnlineMeetings.Read',
       state: userId,
+      prompt: 'select_account',
     });
 
     // Pre-fill the login prompt with the user's email so they don't
@@ -165,16 +166,17 @@ export class MicrosoftCalendarProvider {
       },
     });
 
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
+    const startOfRange = new Date();
+    startOfRange.setDate(startOfRange.getDate() - 30);
+    startOfRange.setHours(0, 0, 0, 0);
 
-    const endOfRange = new Date(startOfToday);
+    const endOfRange = new Date();
     endOfRange.setFullYear(endOfRange.getFullYear() + 1);
 
     const events = await client
       .api('/me/calendarView')
       .query({
-        startDateTime: startOfToday.toISOString(),
+        startDateTime: startOfRange.toISOString(),
         endDateTime: endOfRange.toISOString(),
       })
       .top(50)
