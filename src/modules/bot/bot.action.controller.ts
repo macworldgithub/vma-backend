@@ -20,7 +20,7 @@ export class BotActionController {
   async summonBot(@Body() dto: SummonBotDto, @Req() req: any) {
     this.logger.log(`Manual summon requested for: ${dto.meetingLink}`);
 
-    const userId = req.user.id || req.user._id;
+    const userId = req.user.sub || req.user.id || req.user._id;
 
     // Create an ad-hoc meeting in the database first
     const newMeeting = await this.meetingModel.create({
