@@ -8,6 +8,9 @@ import { CalendarModule } from './modules/calendar/calendar.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { MediasoupModule } from './modules/mediasoup/mediasoup.module';
+import { MailModule } from './modules/mail/mail.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { BotModule } from './modules/bot/bot.module';
 
 
 @Module({
@@ -30,6 +33,9 @@ import { MediasoupModule } from './modules/mediasoup/mediasoup.module';
     RealtimeModule,
     DashboardModule,
     MediasoupModule,
+    MailModule,
+    ScheduleModule.forRoot(),
+    BotModule,
   ],
 })
 export class AppModule {}

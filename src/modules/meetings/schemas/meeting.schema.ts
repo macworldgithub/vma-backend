@@ -51,6 +51,13 @@ export class Meeting {
   // --- New fields for room linkage ---
 
   @Prop()
+  recallBotId?: string;
+
+  @Prop({ default: 'none' })
+  botStatus?: string;
+
+
+  @Prop()
   roomId!: string;
 
   @Prop({ unique: true, sparse: true })
@@ -64,6 +71,9 @@ export class Meeting {
 
   @Prop()
   actualEndTime?: Date;
+
+  @Prop({ type: Object })
+  summaryData?: any;
 
   @Prop({ default: 10 })
   maxParticipants!: number;
