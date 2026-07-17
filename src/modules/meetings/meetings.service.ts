@@ -214,7 +214,6 @@ export class MeetingsService {
    */
   async getUserMeetings(userId: string) {
     return this.model.find({
-      platform: 'vma',
       $or: [
         { createdBy: userId },
         { hostId: userId },

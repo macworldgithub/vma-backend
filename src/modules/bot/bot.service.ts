@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
@@ -8,6 +8,7 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { firstValueFrom } from 'rxjs';
+import { ChatService } from '../realtime/services/chat.service';
 
 @Injectable()
 export class BotService {
@@ -19,6 +20,7 @@ export class BotService {
     private httpService: HttpService,
     private configService: ConfigService,
     private mailService: MailService,
+    private chatService: ChatService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -171,5 +173,65 @@ export class BotService {
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
     }
+  }
+
+  async getMeetingReportPdf(meetingId: string): Promise<Buffer> {
+    const meeting = await this.meetingModel.findById(meetingId);
+    if (!meeting) throw new NotFoundException('Meeting not found');
+
+    let transcriptText = '';
+
+    if (meeting.recallBotId) {
+      // Fetch from Recall
+      const apiKey = this.configService.get<string>('RECALL_API_KEY');
+      const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
+      if (!apiKey || !baseUrl) throw new InternalServerErrorException('Recall API config missing');
+
+      try {
+        const transcriptRes = await firstValueFrom(
+          this.httpService.get(`${baseUrl}/bot/${meeting.recallBotId}/transcript`, {
+            headers: { 'Authorization': `Token ${apiKey}` }
+          })
+        );
+        const transcriptData = transcriptRes.data;
+        if (Array.isArray(transcriptData)) {
+          transcriptText = transcriptData.map((t: any) => `${t.speaker || 'Unknown'}: ${t.text}`).join('\n');
+        } else if (typeof transcriptData === 'string') {
+          transcriptText = transcriptData;
+        } else if (transcriptData.text) {
+          transcriptText = transcriptData.text;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Could not fetch transcript directly, using fallback empty transcript. Error: ${err.message}`);
+        transcriptText = 'Transcript could not be retrieved from Recall.ai API.';
+      }
+    } else {
+      // Fetch from ChatService
+      if (meeting.roomId) {
+        const messages = await this.chatService.getMessages(meeting.roomId);
+        transcriptText = messages.length > 0 
+          ? messages.map(m => `[${new Date(m.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}] ${m.userName}: ${m.message}`).join('\n')
+          : 'No messages available.';
+      } else {
+        transcriptText = 'No transcript available.';
+      }
+    }
+
+    const microserviceUrl = this.configService.get<string>('VMA_MICROSERVICE_URL');
+    if (!microserviceUrl) throw new InternalServerErrorException('Microservice URL not configured');
+
+    const payload = {
+      transcript: transcriptText || '(Empty transcript)',
+      meeting_title: meeting.title,
+      meeting_date: meeting.startTime?.toISOString() || new Date().toISOString(),
+    };
+
+    const pdfRes = await firstValueFrom(
+      this.httpService.post(`${microserviceUrl}/report/pdf`, payload, {
+        responseType: 'arraybuffer'
+      })
+    );
+    
+    return Buffer.from(pdfRes.data);
   }
 }

@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, UseGuards, Req } from '@nestjs/common';
+import { Controller, Post, Body, Logger, UseGuards, Req, Get, Param, Res } from '@nestjs/common';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { BotService } from './bot.service';
 import { SummonBotDto } from './dto/summon-bot.dto';
@@ -43,5 +43,20 @@ export class BotActionController {
       message: 'Bot summoned successfully',
       meetingId: newMeeting._id,
     };
+  }
+
+  @Get('meeting/:id/report')
+  async downloadReport(@Param('id') id: string, @Res() res: any) {
+    try {
+      const pdfBuffer = await this.botService.getMeetingReportPdf(id);
+      res.set({
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="Meeting-Report-${id}.pdf"`,
+      });
+      res.send(pdfBuffer);
+    } catch (error) {
+      this.logger.error(`Failed to download report for meeting ${id}:`, error);
+      res.status(500).send('Failed to generate report');
+    }
   }
 }

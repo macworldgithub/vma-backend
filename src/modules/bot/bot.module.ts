@@ -10,11 +10,14 @@ import { BotActionController } from './bot.action.controller';
 import { JwtCommonModule } from 'src/common/jwt.module';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
 
+import { RealtimeModule } from '../realtime/realtime.module';
+
 @Module({
   imports: [
     HttpModule,
     MailModule,
     JwtCommonModule,
+    RealtimeModule,
     MongooseModule.forFeature([
       { name: Meeting.name, schema: MeetingSchema },
       { name: User.name, schema: UserSchema },
