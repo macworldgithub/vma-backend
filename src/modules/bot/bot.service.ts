@@ -88,6 +88,67 @@ export class BotService {
     }
   }
 
+  private async fetchTranscriptFromRecall(botId: string): Promise<string> {
+    const apiKey = this.configService.get<string>('RECALL_API_KEY');
+    const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
+
+    if (!apiKey || !baseUrl) {
+      throw new InternalServerErrorException('Recall API config missing');
+    }
+
+    // Step 1: Retrieve the bot to get its recordings + media_shortcuts
+    const botRes = await firstValueFrom(
+      this.httpService.get(`${baseUrl}/bot/${botId}/`, {
+        headers: { 'Authorization': `Token ${apiKey}` }
+      })
+    );
+
+    const recordings = botRes.data?.recordings || [];
+    if (recordings.length === 0) {
+      this.logger.warn(`No recordings found for bot ${botId}`);
+      return 'Transcript could not be retrieved from Recall.ai API.';
+    }
+
+    // Step 2: Collect transcript download URLs across all recordings
+    // (a meeting can produce multiple recordings, e.g. pause/resume)
+    const downloadUrls: string[] = recordings
+      .map((r: any) => r.media_shortcuts?.transcript?.data?.download_url)
+      .filter(Boolean);
+
+    if (downloadUrls.length === 0) {
+      this.logger.warn(`No transcript media_shortcut found for bot ${botId}`);
+      return 'Transcript could not be retrieved from Recall.ai API.';
+    }
+
+    // Step 3: Fetch and merge transcript segments from each download_url
+    // download_url is a pre-signed link — no Authorization header needed
+    const allLines: string[] = [];
+
+    for (const url of downloadUrls) {
+      try {
+        const transcriptRes = await firstValueFrom(this.httpService.get(url));
+        const segments = transcriptRes.data;
+
+        if (Array.isArray(segments)) {
+          const lines = segments
+            .map((segment: any) => {
+              const speaker = segment.participant?.name || segment.speaker || 'Unknown';
+              const text = Array.isArray(segment.words)
+                ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
+                : (segment.text || '');
+              return `${speaker}: ${text.trim()}`;
+            })
+            .filter((line: string) => line.trim().length > 2);
+          allLines.push(...lines);
+        }
+      } catch (err: any) {
+        this.logger.warn(`Failed to download transcript segment: ${err.message}`);
+      }
+    }
+
+    return allLines.join('\n');
+  }
+
   async processTranscript(botId: string, meeting: any) {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
@@ -103,47 +164,10 @@ export class BotService {
 
       let transcriptText = '';
       try {
-        const transcriptRes = await firstValueFrom(
-          this.httpService.get(`${baseUrl}/bot/${botId}/transcript`, {
-            headers: { 'Authorization': `Token ${apiKey}` }
-          })
-        );
-
-        const transcriptData = transcriptRes.data;
-        this.logger.debug(`Recall transcript response type: ${typeof transcriptData}, isArray: ${Array.isArray(transcriptData)}`);
-
-        if (Array.isArray(transcriptData)) {
-          // Recall.ai v1 format: array of segments, each with { speaker, words: [{text, start_time, end_time}] }
-          // OR simple format: [{ speaker, text }]
-          transcriptText = transcriptData
-            .map((segment: any) => {
-              const speaker = segment.speaker || segment.participant?.name || 'Unknown';
-              let text = '';
-              if (Array.isArray(segment.words)) {
-                text = segment.words.map((w: any) => w.text || w.word || '').join(' ');
-              } else if (typeof segment.text === 'string') {
-                text = segment.text;
-              } else if (typeof segment.words === 'string') {
-                text = segment.words;
-              }
-              return `${speaker}: ${text.trim()}`;
-            })
-            .filter(line => line.trim().length > 2)
-            .join('\n');
-        } else if (typeof transcriptData === 'string') {
-          transcriptText = transcriptData;
-        } else if (transcriptData?.text) {
-          transcriptText = transcriptData.text;
-        } else if (transcriptData?.transcript) {
-          transcriptText = transcriptData.transcript;
-        }
-
+        transcriptText = await this.fetchTranscriptFromRecall(botId);
         this.logger.log(`Transcript fetched. Length: ${transcriptText.length} chars`);
       } catch (err: any) {
-        this.logger.warn(`Could not fetch transcript. Status: ${err.response?.status}, Error: ${err.message}`);
-        if (err.response?.data) {
-          this.logger.warn(`Recall API error body: ${JSON.stringify(err.response.data)}`);
-        }
+        this.logger.warn(`Could not fetch transcript for bot ${botId}: ${err.message}`);
         transcriptText = 'Transcript could not be retrieved from Recall.ai API.';
       }
 
@@ -203,46 +227,10 @@ export class BotService {
     let transcriptText = '';
 
     if (meeting.recallBotId) {
-      // Fetch from Recall
-      const apiKey = this.configService.get<string>('RECALL_API_KEY');
-      const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
-      if (!apiKey || !baseUrl) throw new InternalServerErrorException('Recall API config missing');
-
       try {
-        const transcriptRes = await firstValueFrom(
-          this.httpService.get(`${baseUrl}/bot/${meeting.recallBotId}/transcript`, {
-            headers: { 'Authorization': `Token ${apiKey}` }
-          })
-        );
-        const transcriptData = transcriptRes.data;
-        if (Array.isArray(transcriptData)) {
-          transcriptText = transcriptData
-            .map((segment: any) => {
-              const speaker = segment.speaker || segment.participant?.name || 'Unknown';
-              let text = '';
-              if (Array.isArray(segment.words)) {
-                text = segment.words.map((w: any) => w.text || w.word || '').join(' ');
-              } else if (typeof segment.text === 'string') {
-                text = segment.text;
-              } else if (typeof segment.words === 'string') {
-                text = segment.words;
-              }
-              return `${speaker}: ${text.trim()}`;
-            })
-            .filter(line => line.trim().length > 2)
-            .join('\n');
-        } else if (typeof transcriptData === 'string') {
-          transcriptText = transcriptData;
-        } else if (transcriptData?.text) {
-          transcriptText = transcriptData.text;
-        } else if (transcriptData?.transcript) {
-          transcriptText = transcriptData.transcript;
-        }
+        transcriptText = await this.fetchTranscriptFromRecall(meeting.recallBotId);
       } catch (err: any) {
-        this.logger.warn(`Could not fetch transcript from Recall. Status: ${err.response?.status}, Error: ${err.message}`);
-        if (err.response?.data) {
-          this.logger.warn(`Recall API error body: ${JSON.stringify(err.response.data)}`);
-        }
+        this.logger.warn(`Could not fetch transcript from Recall: ${err.message}`);
         transcriptText = 'Transcript could not be retrieved from Recall.ai API.';
       }
     } else {
