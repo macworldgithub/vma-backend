@@ -21,7 +21,7 @@ export class BotService {
     private configService: ConfigService,
     private mailService: MailService,
     private chatService: ChatService,
-  ) {}
+  ) { }
 
   @Cron(CronExpression.EVERY_MINUTE)
   async checkUpcomingMeetings() {
@@ -48,7 +48,7 @@ export class BotService {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
     const botName = this.configService.get<string>('BOT_NAME', 'Patterson Cheney Virtual Assistant');
-    
+
     if (!apiKey || !baseUrl) {
       this.logger.error('Recall.ai API Key or Base URL is missing.');
       return;
@@ -63,7 +63,17 @@ export class BotService {
           {
             meeting_url: meeting.meetingLink,
             bot_name: botName,
-            metadata: { meetingId: meeting._id.toString() } 
+            metadata: { meetingId: meeting._id.toString() },
+            recording_config: {
+              transcript: {
+                provider: {
+                  recallai_streaming: {
+                    mode: 'prioritize_accuracy',
+                    language_code: 'en' // or your target language
+                  }
+                }
+              }
+            }
           },
           {
             headers: {
@@ -76,8 +86,8 @@ export class BotService {
 
       const botId = response.data.id;
       this.logger.log(`Successfully requested bot for meeting ${meeting._id}. Bot ID: ${botId}`);
-      
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { 
+
+      await this.meetingModel.findByIdAndUpdate(meeting._id, {
         recallBotId: botId,
         botStatus: 'joining'
       }, { runValidators: false });
@@ -187,7 +197,7 @@ export class BotService {
       const analysisRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/analyse`, payload)
       );
-      
+
       const summaryData = analysisRes.data;
 
       // 3. Update Meeting with Summary Data
@@ -203,14 +213,14 @@ export class BotService {
 
       // 5. Send Email
       let emailAddress = 'admin@omnisuiteai.com'; // fallback
-      
+
       if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
         const user = await this.userModel.findById(meeting.createdBy);
         if (user && user.email) {
           emailAddress = user.email;
         }
       }
-      
+
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript for meeting ${meeting._id}`);
 
@@ -237,7 +247,7 @@ export class BotService {
       // Fetch from ChatService
       if (meeting.roomId) {
         const messages = await this.chatService.getMessages(meeting.roomId);
-        transcriptText = messages.length > 0 
+        transcriptText = messages.length > 0
           ? messages.map(m => `[${new Date(m.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}] ${m.userName}: ${m.message}`).join('\n')
           : 'No messages available.';
       } else {
@@ -259,7 +269,7 @@ export class BotService {
         responseType: 'arraybuffer'
       })
     );
-    
+
     return Buffer.from(pdfRes.data);
   }
 }

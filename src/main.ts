@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import * as express from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,6 +12,9 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
   const port = configService.get('PORT') || 5000;
   const frontendUrl = configService.get('FRONTEND_URL') || 'http://localhost:3000';
+
+  // Capture raw body for webhook verification
+  app.use('/webhooks/recall', express.raw({ type: 'application/json' }));
 
   app.useGlobalPipes(
     new ValidationPipe({
