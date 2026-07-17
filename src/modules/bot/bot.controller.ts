@@ -37,12 +37,12 @@ export class BotController {
       case 'bot.in_call_recording':
       case 'bot.in_call_not_recording':
         this.logger.log(`Bot ${botId} status changed to ${payload.event}`);
-        await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: payload.event });
+        await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: payload.event }, { runValidators: false });
         break;
       
       case 'bot.call_ended':
         this.logger.log(`Meeting ended for Bot ${botId}`);
-        await this.meetingModel.findByIdAndUpdate(meeting._id, { status: 'ENDED' });
+        await this.meetingModel.findByIdAndUpdate(meeting._id, { status: 'ENDED' }, { runValidators: false });
         break;
 
       case 'bot.done':

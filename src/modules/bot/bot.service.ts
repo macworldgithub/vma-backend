@@ -55,7 +55,7 @@ export class BotService {
     }
 
     try {
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'joining' });
+      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'joining' }, { runValidators: false });
 
       const response = await firstValueFrom(
         this.httpService.post(
@@ -80,11 +80,11 @@ export class BotService {
       await this.meetingModel.findByIdAndUpdate(meeting._id, { 
         recallBotId: botId,
         botStatus: 'joining'
-      });
+      }, { runValidators: false });
 
     } catch (error: any) {
       this.logger.error(`Failed to trigger bot for meeting ${meeting._id}`, error.response?.data || error.message);
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'error' });
+      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'error' }, { runValidators: false });
     }
   }
 
@@ -107,7 +107,7 @@ export class BotService {
       let transcriptText = '';
       try {
         const transcriptRes = await firstValueFrom(
-          this.httpService.get(`${baseUrl}/bot/${botId}/transcript`, {
+          this.httpService.get(`${baseUrl}/bot/${botId}/transcript/`, {
             headers: { 'Authorization': `Token ${apiKey}` }
           })
         );
@@ -147,7 +147,7 @@ export class BotService {
       const summaryData = analysisRes.data;
 
       // 3. Update Meeting with Summary Data
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { summaryData });
+      await this.meetingModel.findByIdAndUpdate(meeting._id, { summaryData }, { runValidators: false });
 
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(
@@ -189,7 +189,7 @@ export class BotService {
 
       try {
         const transcriptRes = await firstValueFrom(
-          this.httpService.get(`${baseUrl}/bot/${meeting.recallBotId}/transcript`, {
+          this.httpService.get(`${baseUrl}/bot/${meeting.recallBotId}/transcript/`, {
             headers: { 'Authorization': `Token ${apiKey}` }
           })
         );
