@@ -21,27 +21,53 @@ export class BotActionController {
     this.logger.log(`Manual summon requested for: ${dto.meetingLink}`);
 
     const userId = req.user.sub || req.user.id || req.user._id;
+    let targetMeeting;
 
-    // Create an ad-hoc meeting in the database first
-    const newMeeting = await this.meetingModel.create({
-      title: dto.title,
-      platform: dto.platform,
-      meetingLink: dto.meetingLink,
-      source: 'manual',
-      provider: 'vma',
-      status: 'LIVE',
-      createdBy: userId,
-      hostId: userId,
-      startTime: new Date(),
-      endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
-    });
+    if (dto.meetingId) {
+      targetMeeting = await this.meetingModel.findById(dto.meetingId);
+      if (!targetMeeting) {
+        // Fallback to creating if not found
+        targetMeeting = await this.meetingModel.create({
+          title: dto.title,
+          platform: dto.platform,
+          meetingLink: dto.meetingLink,
+          source: 'manual',
+          provider: 'vma',
+          status: 'LIVE',
+          createdBy: userId,
+          hostId: userId,
+          startTime: new Date(),
+          endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
+        });
+      } else {
+        // Update status to LIVE if it's currently SCHEDULED
+        if (targetMeeting.status === 'SCHEDULED') {
+          targetMeeting.status = 'LIVE';
+          await targetMeeting.save();
+        }
+      }
+    } else {
+      // Create an ad-hoc meeting in the database first
+      targetMeeting = await this.meetingModel.create({
+        title: dto.title,
+        platform: dto.platform,
+        meetingLink: dto.meetingLink,
+        source: 'manual',
+        provider: 'vma',
+        status: 'LIVE',
+        createdBy: userId,
+        hostId: userId,
+        startTime: new Date(),
+        endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
+      });
+    }
 
     // Trigger the bot immediately
-    await this.botService.joinMeeting(newMeeting);
+    await this.botService.joinMeeting(targetMeeting);
 
     return {
       message: 'Bot summoned successfully',
-      meetingId: newMeeting._id,
+      meetingId: targetMeeting._id,
     };
   }
 

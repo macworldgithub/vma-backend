@@ -1,4 +1,4 @@
-import { IsString, IsUrl, IsNotEmpty } from 'class-validator';
+import { IsString, IsUrl, IsNotEmpty, IsOptional } from 'class-validator';
 
 export class SummonBotDto {
   @IsString()
@@ -12,4 +12,8 @@ export class SummonBotDto {
   @IsString()
   @IsNotEmpty()
   platform: string; // teams, zoom, google
+
+  @IsOptional()
+  @IsString()
+  meetingId?: string;
 }
