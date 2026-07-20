@@ -27,9 +27,9 @@ export class BotController {
     try {
       // req.body is the raw Buffer here because of the bodyParser.raw() middleware
       payload = this.webhook.verify(req.body, {
-        'svix-id': headers['svix-id'],
-        'svix-timestamp': headers['svix-timestamp'],
-        'svix-signature': headers['svix-signature'],
+        'webhook-id': headers['webhook-id'],
+        'webhook-timestamp': headers['webhook-timestamp'],
+        'webhook-signature': headers['webhook-signature'],
       });
     } catch (err: any) {
       this.logger.warn(`Webhook signature verification failed: ${err.message}`);
