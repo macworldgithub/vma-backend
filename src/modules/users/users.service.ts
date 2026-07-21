@@ -9,7 +9,8 @@ export class UsersService {
   constructor(@InjectModel(User.name) private model: Model<User>) {}
 
   findByEmail(email: string) {
-    return this.model.findOne({ email });
+    const escapedEmail = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return this.model.findOne({ email: { $regex: new RegExp(`^${escapedEmail}$`, 'i') } });
   }
 
   create(data: any) {
@@ -48,7 +49,7 @@ export class UsersService {
   }
 
   async createByAdmin(data: { name: string; email: string; password: string; role?: string }) {
-    const existing = await this.model.findOne({ email: data.email });
+    const existing = await this.findByEmail(data.email);
     if (existing) {
       throw new BadRequestException('A user with this email already exists');
     }
