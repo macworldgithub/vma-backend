@@ -95,7 +95,7 @@ export class MeetingsController {
   @ApiOperation({ summary: 'Get logged-in user meetings' })
   @ApiResponse({ status: 200, description: 'List of user meetings' })
   getMy(@Req() req: any) {
-    return this.service.getUserMeetings(req.user.sub);
+    return this.service.getUserMeetings(req.user.sub, req.user.email);
   }
 
   // ─── ALL MEETINGS (admin) ──────────────────────────────────────────────
