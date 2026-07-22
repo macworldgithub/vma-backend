@@ -194,6 +194,45 @@ export class BotService {
         summaryData: { ...summaryData, transcript: transcriptText }
       }, { runValidators: false });
 
+      // Match speakers to VMA users
+      const speakerNames = new Set<string>();
+      const speakerRegex = /^(?:\[\d{1,2}:\d{2}\]\s*)?([^:\n]+):/gm;
+      let match;
+      while ((match = speakerRegex.exec(transcriptText)) !== null) {
+        const name = match[1].trim();
+        if (name && name.length < 50 && !/^\d{1,2}:\d{2}$/.test(name)) {
+          speakerNames.add(name);
+        }
+      }
+
+      const matchedUserIds: string[] = [];
+      if (speakerNames.size > 0) {
+        const names = Array.from(speakerNames);
+        try {
+          const matchedUsers = await this.userModel.find({
+            name: { $in: names.map(name => new RegExp(`^${name}$`, 'i')) }
+          });
+          matchedUserIds.push(...matchedUsers.map(u => u._id.toString()));
+        } catch (err: any) {
+          this.logger.error(`Error matching speaker names to users: ${err.message}`);
+        }
+      }
+
+      // Ensure creator and host are in participants list
+      if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
+        matchedUserIds.push(meeting.createdBy);
+      }
+      if (meeting.hostId) {
+        matchedUserIds.push(meeting.hostId);
+      }
+
+      const updatedParticipants = Array.from(new Set([...(meeting.participants || []), ...matchedUserIds]));
+
+      // Save updated participants list back to the meeting document
+      await this.meetingModel.findByIdAndUpdate(meeting._id, {
+        participants: updatedParticipants
+      }, { runValidators: false });
+
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/report/pdf`, payload, {
@@ -202,19 +241,32 @@ export class BotService {
       );
       const pdfBuffer = Buffer.from(pdfRes.data);
 
-      // 5. Send Email
-      let emailAddress = 'admin@omnisuiteai.com'; // fallback
+      // 5. Send Email to all participants
+      const users = await this.userModel.find({ _id: { $in: updatedParticipants } });
+      const emails = users.map(u => u.email).filter(Boolean);
 
-      if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
-        const user = await this.userModel.findById(meeting.createdBy);
-        if (user && user.email) {
-          emailAddress = user.email;
+      if (emails.length === 0) {
+        let fallbackEmail = 'admin@omnisuiteai.com';
+        if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
+          const user = await this.userModel.findById(meeting.createdBy);
+          if (user && user.email) {
+            fallbackEmail = user.email;
+          }
+        }
+        emails.push(fallbackEmail);
+      }
+
+      const uniqueEmails = Array.from(new Set(emails));
+      this.logger.log(`Sending meeting reports to: ${uniqueEmails.join(', ')}`);
+      for (const email of uniqueEmails) {
+        try {
+          await this.mailService.sendMeetingReport(email, meeting.title, pdfBuffer);
+        } catch (mailErr: any) {
+          this.logger.error(`Failed to send email to ${email}: ${mailErr.message}`);
         }
       }
 
-      await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript for meeting ${meeting._id}`);
-
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
     }

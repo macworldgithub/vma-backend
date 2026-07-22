@@ -632,6 +632,9 @@ import { Logger } from '@nestjs/common';
 import { TranscriptService } from '../services/transcript.service';
 import { DeepgramService } from '../services/deepgram.service';
 import { MediasoupService } from '../../mediasoup/mediasoup.service';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
+import { Meeting } from '../../meetings/schemas/meeting.schema';
 
 interface SocketUser {
   userId: string;
@@ -655,6 +658,7 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
   private socketUsers = new Map<string, SocketUser>();
 
   constructor(
+    @InjectModel(Meeting.name) private readonly meetingModel: Model<Meeting>,
     private readonly roomService: RoomService,
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
@@ -729,6 +733,16 @@ export class MeetingGateway implements OnGatewayConnection, OnGatewayDisconnect 
           videoEnabled: data.videoEnabled,
         }
       );
+
+      // Also track participant on the Meeting document
+      try {
+        await this.meetingModel.updateOne(
+          { roomId: data.roomId },
+          { $addToSet: { participants: userId } },
+        );
+      } catch (err: any) {
+        this.logger.error(`Failed to add participant ${userId} to meeting ${data.roomId}: ${err.message}`);
+      }
 
       // If there was a stale entry for this user, notify the room that the old connection is gone
       if (staleParticipant && staleParticipant.socketId !== client.id) {
