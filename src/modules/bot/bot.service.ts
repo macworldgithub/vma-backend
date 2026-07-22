@@ -106,27 +106,26 @@ export class BotService {
       throw new InternalServerErrorException('Recall API config missing');
     }
 
-    // Step 1: Retrieve the bot to get its recordings + media_shortcuts
-    const botRes = await firstValueFrom(
-      this.httpService.get(`${baseUrl}/bot/${botId}/`, {
+    // Step 1: Retrieve transcripts for the bot
+    const transcriptListRes = await firstValueFrom(
+      this.httpService.get(`${baseUrl}/transcript/?bot_id=${botId}`, {
         headers: { 'Authorization': `Token ${apiKey}` }
       })
     );
 
-    const recordings = botRes.data?.recordings || [];
-    if (recordings.length === 0) {
-      this.logger.warn(`No recordings found for bot ${botId}`);
+    const transcripts = transcriptListRes.data || [];
+    if (transcripts.length === 0) {
+      this.logger.warn(`No transcripts found for bot ${botId}`);
       return 'Transcript could not be retrieved from Recall.ai API.';
     }
 
-    // Step 2: Collect transcript download URLs across all recordings
-    // (a meeting can produce multiple recordings, e.g. pause/resume)
-    const downloadUrls: string[] = recordings
-      .map((r: any) => r.media_shortcuts?.transcript?.data?.download_url)
+    // Step 2: Collect transcript download URLs
+    const downloadUrls: string[] = transcripts
+      .map((t: any) => t.data?.download_url)
       .filter(Boolean);
 
     if (downloadUrls.length === 0) {
-      this.logger.warn(`No transcript media_shortcut found for bot ${botId}`);
+      this.logger.warn(`No transcript download URL found for bot ${botId}`);
       return 'Transcript could not be retrieved from Recall.ai API.';
     }
 
@@ -142,13 +141,19 @@ export class BotService {
         if (Array.isArray(segments)) {
           const lines = segments
             .map((segment: any) => {
-              const speaker = segment.participant?.name || segment.speaker || 'Unknown';
+              const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
               const text = Array.isArray(segment.words)
                 ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
                 : (segment.text || '');
-              return `${speaker}: ${text.trim()}`;
+
+              const startTimeRaw = segment.start_time || (segment.words && segment.words.length > 0 ? segment.words[0].start_time : 0);
+              const minutes = Math.floor(startTimeRaw / 60);
+              const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
+              const timestamp = `${minutes}:${seconds}`;
+
+              return `[${timestamp}] ${speaker}: ${text.trim()}`;
             })
-            .filter((line: string) => line.trim().length > 2);
+            .filter((line: string) => !line.endsWith(': '));
           allLines.push(...lines);
         }
       } catch (err: any) {
@@ -192,16 +197,19 @@ export class BotService {
         meeting_title: meeting.title,
         meeting_date: meeting.startTime?.toISOString() || new Date().toISOString(),
       };
-
+      console.log(payload, "PAYLOAD")
       // 2. Fetch JSON Summary
       const analysisRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/analyse`, payload)
       );
 
       const summaryData = analysisRes.data;
-
+      console.log(transcriptText, "Transcript Text")
+      console.log(summaryData, "SummaryData")
       // 3. Update Meeting with Summary Data
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { summaryData }, { runValidators: false });
+      await this.meetingModel.findByIdAndUpdate(meeting._id, {
+        summaryData: { ...summaryData, transcript: transcriptText }
+      }, { runValidators: false });
 
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(
