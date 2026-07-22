@@ -75,19 +75,26 @@ export class BotController {
         break;
 
       case 'transcript.done':
-        this.logger.log(`Transcript ready for Bot ${botId}, processing...`);
-        this.botService.processTranscript(botId, meeting).catch((err) => {
-          this.logger.error(`Error processing transcript: ${err.message}`);
-        });
+        {
+          const transcriptId = data.transcript?.id;
+          this.logger.log(`Transcript ${transcriptId} ready for Bot ${botId}, processing...`);
+          if (transcriptId) {
+            await this.meetingModel.findByIdAndUpdate(meeting._id, { transcriptId }, { runValidators: false });
+          }
+          this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
+            this.logger.error(`Error processing transcript: ${err.message}`);
+          });
+        }
         break;
 
       case 'transcript.failed':
-        this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
-        // Fall back to processing anyway so the meeting isn't stuck forever —
-        // fetchTranscriptFromRecall will return the "could not be retrieved" placeholder text
-        this.botService.processTranscript(botId, meeting).catch((err) => {
-          this.logger.error(`Error processing transcript after failure: ${err.message}`);
-        });
+        {
+          const transcriptId = data.transcript?.id;
+          this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
+          this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
+            this.logger.error(`Error processing transcript after failure: ${err.message}`);
+          });
+        }
         break;
 
       default:

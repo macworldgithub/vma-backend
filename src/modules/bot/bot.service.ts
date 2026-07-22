@@ -98,75 +98,59 @@ export class BotService {
     }
   }
 
-  private async fetchTranscriptFromRecall(botId: string): Promise<string> {
+  private async fetchTranscriptFromRecall(transcriptId?: string): Promise<string> {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
 
     if (!apiKey || !baseUrl) {
       throw new InternalServerErrorException('Recall API config missing');
     }
+    if (!transcriptId) {
+      this.logger.warn('No transcript ID provided; cannot fetch transcript.');
+      return 'Transcript could not be retrieved from Recall.ai API.';
+    }
 
-    // Step 1: Retrieve transcripts for the bot
-    const transcriptListRes = await firstValueFrom(
-      this.httpService.get(`${baseUrl}/transcript/?bot_id=${botId}`, {
+    // Step 1: Retrieve the transcript object to get its pre-signed download_url
+    const transcriptRes = await firstValueFrom(
+      this.httpService.get(`${baseUrl}/transcript/${transcriptId}/`, {
         headers: { 'Authorization': `Token ${apiKey}` }
       })
     );
 
-    const transcripts = transcriptListRes.data || [];
-    if (transcripts.length === 0) {
-      this.logger.warn(`No transcripts found for bot ${botId}`);
+    const downloadUrl = transcriptRes.data?.data?.download_url;
+    if (!downloadUrl) {
+      this.logger.warn(`No download_url on transcript ${transcriptId}`);
       return 'Transcript could not be retrieved from Recall.ai API.';
     }
 
-    // Step 2: Collect transcript download URLs
-    const downloadUrls: string[] = transcripts
-      .map((t: any) => t.data?.download_url)
-      .filter(Boolean);
+    // Step 2: Fetch the actual transcript segments (pre-signed URL, no auth header needed)
+    const segmentsRes = await firstValueFrom(this.httpService.get(downloadUrl));
+    const segments = segmentsRes.data;
 
-    if (downloadUrls.length === 0) {
-      this.logger.warn(`No transcript download URL found for bot ${botId}`);
+    if (!Array.isArray(segments)) {
       return 'Transcript could not be retrieved from Recall.ai API.';
     }
 
-    // Step 3: Fetch and merge transcript segments from each download_url
-    // download_url is a pre-signed link — no Authorization header needed
-    const allLines: string[] = [];
+    const lines = segments
+      .map((segment: any) => {
+        const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
+        const text = Array.isArray(segment.words)
+          ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
+          : (segment.text || '');
 
-    for (const url of downloadUrls) {
-      try {
-        const transcriptRes = await firstValueFrom(this.httpService.get(url));
-        const segments = transcriptRes.data;
+        const startTimeRaw = segment.start_time ?? (segment.words?.[0]?.start_time ?? 0);
+        const minutes = Math.floor(startTimeRaw / 60);
+        const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
+        const timestamp = `${minutes}:${seconds}`;
 
-        if (Array.isArray(segments)) {
-          const lines = segments
-            .map((segment: any) => {
-              const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
-              const text = Array.isArray(segment.words)
-                ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
-                : (segment.text || '');
+        return `[${timestamp}] ${speaker}: ${text.trim()}`;
+      })
+      .filter((line: string) => !line.endsWith(': '));
 
-              const startTimeRaw = segment.start_time || (segment.words && segment.words.length > 0 ? segment.words[0].start_time : 0);
-              const minutes = Math.floor(startTimeRaw / 60);
-              const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
-              const timestamp = `${minutes}:${seconds}`;
-
-              return `[${timestamp}] ${speaker}: ${text.trim()}`;
-            })
-            .filter((line: string) => !line.endsWith(': '));
-          allLines.push(...lines);
-        }
-      } catch (err: any) {
-        this.logger.warn(`Failed to download transcript segment: ${err.message}`);
-      }
-    }
-
-    return allLines.join('\n');
+    return lines.join('\n');
   }
 
-  async processTranscript(botId: string, meeting: any) {
-    const apiKey = this.configService.get<string>('RECALL_API_KEY');
-    const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
+  async processTranscript(botId: string, meeting: any, transcriptId?: string) {
     const microserviceUrl = this.configService.get<string>('VMA_MICROSERVICE_URL');
 
     if (!microserviceUrl) {
@@ -179,8 +163,7 @@ export class BotService {
 
       let transcriptText = '';
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(botId);
-        this.logger.log(`Transcript fetched. Length: ${transcriptText.length} chars`);
+        transcriptText = await this.fetchTranscriptFromRecall(transcriptId ?? meeting.transcriptId);
       } catch (err: any) {
         this.logger.warn(`Could not fetch transcript for bot ${botId}: ${err.message}`);
         transcriptText = 'Transcript could not be retrieved from Recall.ai API.';

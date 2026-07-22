@@ -77,6 +77,9 @@ export class Meeting {
 
   @Prop({ default: 10 })
   maxParticipants!: number;
+
+  @Prop()
+  transcriptId?: string;
 }
 
 export const MeetingSchema = SchemaFactory.createForClass(Meeting);
