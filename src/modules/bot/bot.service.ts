@@ -3,7 +3,6 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
 import { User } from '../users/users.schema';
-import { CalendarToken } from '../calendar/schemas/calendar-token.schema';
 import { MailService } from '../mail/mail.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -18,7 +17,6 @@ export class BotService {
   constructor(
     @InjectModel(Meeting.name) private meetingModel: Model<Meeting>,
     @InjectModel(User.name) private userModel: Model<User>,
-    @InjectModel(CalendarToken.name) private calendarTokenModel: Model<CalendarToken>,
     private httpService: HttpService,
     private configService: ConfigService,
     private mailService: MailService,
@@ -196,87 +194,6 @@ export class BotService {
         summaryData: { ...summaryData, transcript: transcriptText }
       }, { runValidators: false });
 
-      // Match speakers to VMA users
-      const speakerNames = new Set<string>();
-      const speakerRegex = /^(?:\[\d{1,2}:\d{2}\]\s*)?([^:\n]+):/gm;
-      let match;
-      while ((match = speakerRegex.exec(transcriptText)) !== null) {
-        const name = match[1].trim();
-        if (name && name.length < 50 && !/^\d{1,2}:\d{2}$/.test(name)) {
-          speakerNames.add(name);
-        }
-      }
-
-      const matchedUserIds: string[] = [];
-
-      // 1. Resolve invited emails from calendar invite list to VMA user IDs
-      const inviteeEmails = (meeting.participants || []).filter((p: string) => p.includes('@'));
-      if (inviteeEmails.length > 0) {
-        try {
-          // 1a. Direct match: invitee email matches VMA login email
-          const registeredInvitees = await this.userModel.find({
-            email: { $in: inviteeEmails }
-          });
-          matchedUserIds.push(...registeredInvitees.map(u => u._id.toString()));
-
-          // 1b. Microsoft calendar link match: invitee email matches a linked Microsoft account
-          const alreadyMatchedEmails = registeredInvitees.map(u => u.email);
-          const unmatchedEmails = inviteeEmails.filter((e: string) => !alreadyMatchedEmails.includes(e));
-          if (unmatchedEmails.length > 0) {
-            const calendarTokens = await this.calendarTokenModel.find({
-              microsoftEmail: { $in: unmatchedEmails },
-            });
-            for (const ct of calendarTokens) {
-              this.logger.log(`Resolved Microsoft email ${ct.microsoftEmail} → VMA userId ${ct.userId}`);
-              matchedUserIds.push(ct.userId);
-            }
-          }
-        } catch (err: any) {
-          this.logger.error(`Error resolving invitee emails to user IDs: ${err.message}`);
-        }
-      }
-
-      // 2. Resolve speaker names to user IDs with deduplication checks
-      if (speakerNames.size > 0) {
-        const names = Array.from(speakerNames);
-        try {
-          const matchedUsers = await this.userModel.find({
-            name: { $in: names.map(name => new RegExp(`^${name}$`, 'i')) }
-          });
-
-          for (const name of names) {
-            const usersWithName = matchedUsers.filter(u => u.name.toLowerCase() === name.toLowerCase());
-            if (usersWithName.length === 1) {
-              // Only one user has this name, safe to match
-              matchedUserIds.push(usersWithName[0]._id.toString());
-            } else if (usersWithName.length > 1) {
-              // Multiple users have this name. Filter to match only the one whose email is in the invite/participant list
-              const actualParticipant = usersWithName.find(u => inviteeEmails.includes(u.email));
-              if (actualParticipant) {
-                matchedUserIds.push(actualParticipant._id.toString());
-              }
-            }
-          }
-        } catch (err: any) {
-          this.logger.error(`Error matching speaker names to users: ${err.message}`);
-        }
-      }
-
-      // Ensure creator and host are in participants list
-      if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
-        matchedUserIds.push(meeting.createdBy);
-      }
-      if (meeting.hostId) {
-        matchedUserIds.push(meeting.hostId);
-      }
-
-      const updatedParticipants = Array.from(new Set([...(meeting.participants || []), ...matchedUserIds]));
-
-      // Save updated participants list back to the meeting document
-      await this.meetingModel.findByIdAndUpdate(meeting._id, {
-        participants: updatedParticipants
-      }, { runValidators: false });
-
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/report/pdf`, payload, {
@@ -285,45 +202,19 @@ export class BotService {
       );
       const pdfBuffer = Buffer.from(pdfRes.data);
 
-      // 5. Send Email to all participants
-      const participantIds: string[] = [];
-      const participantEmails: string[] = [];
-      for (const p of updatedParticipants) {
-        if (p.includes('@')) {
-          participantEmails.push(p);
-        } else {
-          participantIds.push(p);
+      // 5. Send Email
+      let emailAddress = 'admin@omnisuiteai.com'; // fallback
+
+      if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
+        const user = await this.userModel.findById(meeting.createdBy);
+        if (user && user.email) {
+          emailAddress = user.email;
         }
       }
 
-      const users = await this.userModel.find({ _id: { $in: participantIds } });
-      const emails = [
-        ...users.map(u => u.email),
-        ...participantEmails
-      ].filter(Boolean);
-
-      if (emails.length === 0) {
-        let fallbackEmail = 'admin@omnisuiteai.com';
-        if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
-          const user = await this.userModel.findById(meeting.createdBy);
-          if (user && user.email) {
-            fallbackEmail = user.email;
-          }
-        }
-        emails.push(fallbackEmail);
-      }
-
-      const uniqueEmails = Array.from(new Set(emails));
-      this.logger.log(`Sending meeting reports to: ${uniqueEmails.join(', ')}`);
-      for (const email of uniqueEmails) {
-        try {
-          await this.mailService.sendMeetingReport(email, meeting.title, pdfBuffer);
-        } catch (mailErr: any) {
-          this.logger.error(`Failed to send email to ${email}: ${mailErr.message}`);
-        }
-      }
-
+      await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript for meeting ${meeting._id}`);
+
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
     }

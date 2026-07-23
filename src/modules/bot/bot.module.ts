@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
 import { User, UserSchema } from '../users/users.schema';
-import { CalendarToken, CalendarTokenSchema } from '../calendar/schemas/calendar-token.schema';
 import { MailModule } from '../mail/mail.module';
 import { HttpModule } from '@nestjs/axios';
 import { BotService } from './bot.service';
@@ -22,7 +21,6 @@ import { RealtimeModule } from '../realtime/realtime.module';
     MongooseModule.forFeature([
       { name: Meeting.name, schema: MeetingSchema },
       { name: User.name, schema: UserSchema },
-      { name: CalendarToken.name, schema: CalendarTokenSchema },
     ]),
   ],
   providers: [BotService, JwtGuard],

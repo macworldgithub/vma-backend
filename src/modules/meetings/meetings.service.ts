@@ -209,18 +209,17 @@ export class MeetingsService {
     });
   }
 
-  async getUserMeetings(userId: string, email?: string) {
-    const query: any = {
+  /**
+   * Get meetings for a specific user
+   */
+  async getUserMeetings(userId: string) {
+    return this.model.find({
       $or: [
         { createdBy: userId },
         { hostId: userId },
         { participants: userId },
       ],
-    };
-    if (email) {
-      query.$or.push({ participants: email });
-    }
-    return this.model.find(query).sort({ startTime: -1 });
+    }).sort({ startTime: -1 });
   }
 
   /**
