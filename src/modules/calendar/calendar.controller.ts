@@ -40,26 +40,28 @@ export class CalendarController {
   ) {
     const isAjax = req.headers['accept']?.includes('application/json') || req.headers['x-requested-with'];
 
-    if (!isAjax) {
-      // Direct browser redirect from Google -> redirect to frontend callback page
-      let frontendUrl = process.env.FRONTEND_URL;
-      if (!frontendUrl) {
-        const ref = req.headers['referer'] || req.headers['origin'];
-        if (ref) {
-          try {
-            frontendUrl = new URL(ref).origin;
-          } catch (e) {}
-        }
+    try {
+      const token = await this.calendarService.connectGoogle(state, code);
+
+      if (isAjax) {
+        return res.json(token);
       }
-      if (!frontendUrl) frontendUrl = 'https://vma.goodshowroom.com';
+
+      let frontendUrl = process.env.FRONTEND_URL || 'https://vma.goodshowroom.com';
       frontendUrl = frontendUrl.replace(/\/$/, '');
 
-      return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}`);
-    }
+      return res.redirect(`${frontendUrl}/dashboard/calendar?status=success&provider=google`);
+    } catch (error: any) {
+      console.error('GOOGLE CALLBACK ERROR:', error);
+      if (isAjax) {
+        return res.status(400).json({ message: error.message || 'Failed to connect Google Calendar' });
+      }
 
-    // AJAX request from the frontend -> exchange code, save token and return JSON
-    const token = await this.calendarService.connectGoogle(state, code);
-    return res.json(token);
+      let frontendUrl = process.env.FRONTEND_URL || 'https://vma.goodshowroom.com';
+      frontendUrl = frontendUrl.replace(/\/$/, '');
+
+      return res.redirect(`${frontendUrl}/dashboard/calendar?status=error&error=${encodeURIComponent(error.message || 'Failed to connect')}`);
+    }
   }
 
   // SYNC ALL EVENTS
@@ -109,26 +111,28 @@ export class CalendarController {
   ) {
     const isAjax = req.headers['accept']?.includes('application/json') || req.headers['x-requested-with'];
 
-    if (!isAjax) {
-      // Direct browser redirect from Microsoft -> redirect to frontend callback page
-      let frontendUrl = process.env.FRONTEND_URL;
-      if (!frontendUrl) {
-        const ref = req.headers['referer'] || req.headers['origin'];
-        if (ref) {
-          try {
-            frontendUrl = new URL(ref).origin;
-          } catch (e) {}
-        }
+    try {
+      const token = await this.calendarService.connectMicrosoft(state, code);
+
+      if (isAjax) {
+        return res.json(token);
       }
-      if (!frontendUrl) frontendUrl = 'https://vma.goodshowroom.com';
+
+      let frontendUrl = process.env.FRONTEND_URL || 'https://vma.goodshowroom.com';
       frontendUrl = frontendUrl.replace(/\/$/, '');
 
-      return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}&provider=microsoft`);
-    }
+      return res.redirect(`${frontendUrl}/dashboard/calendar?status=success&provider=microsoft`);
+    } catch (error: any) {
+      console.error('MICROSOFT CALLBACK ERROR:', error);
+      if (isAjax) {
+        return res.status(400).json({ message: error.message || 'Failed to connect Microsoft Calendar' });
+      }
 
-    // AJAX request from the frontend -> exchange code, save token and return JSON
-    const token = await this.calendarService.connectMicrosoft(state, code);
-    return res.json(token);
+      let frontendUrl = process.env.FRONTEND_URL || 'https://vma.goodshowroom.com';
+      frontendUrl = frontendUrl.replace(/\/$/, '');
+
+      return res.redirect(`${frontendUrl}/dashboard/calendar?status=error&error=${encodeURIComponent(error.message || 'Failed to connect')}`);
+    }
   }
 
   @UseGuards(JwtGuard)
