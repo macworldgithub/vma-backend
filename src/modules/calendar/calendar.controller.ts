@@ -42,7 +42,18 @@ export class CalendarController {
 
     if (!isAjax) {
       // Direct browser redirect from Google -> redirect to frontend callback page
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      let frontendUrl = process.env.FRONTEND_URL;
+      if (!frontendUrl) {
+        const ref = req.headers['referer'] || req.headers['origin'];
+        if (ref) {
+          try {
+            frontendUrl = new URL(ref).origin;
+          } catch (e) {}
+        }
+      }
+      if (!frontendUrl) frontendUrl = 'https://vma.goodshowroom.com';
+      frontendUrl = frontendUrl.replace(/\/$/, '');
+
       return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}`);
     }
 
@@ -100,7 +111,18 @@ export class CalendarController {
 
     if (!isAjax) {
       // Direct browser redirect from Microsoft -> redirect to frontend callback page
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      let frontendUrl = process.env.FRONTEND_URL;
+      if (!frontendUrl) {
+        const ref = req.headers['referer'] || req.headers['origin'];
+        if (ref) {
+          try {
+            frontendUrl = new URL(ref).origin;
+          } catch (e) {}
+        }
+      }
+      if (!frontendUrl) frontendUrl = 'https://vma.goodshowroom.com';
+      frontendUrl = frontendUrl.replace(/\/$/, '');
+
       return res.redirect(`${frontendUrl}/calendar/callback?code=${code}&state=${state}&provider=microsoft`);
     }
 

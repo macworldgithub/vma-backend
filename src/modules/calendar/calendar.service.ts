@@ -52,6 +52,7 @@ export class CalendarService {
 
   // CONNECT MICROSOFT
   async connectMicrosoft(userId: string, code: string) {
+    let tokenDoc;
     try {
       const tokens = await this.microsoftProvider.exchangeCodeForTokens(code);
       this.logger.log(`MICROSOFT TOKENS received for userId=${userId}`);
@@ -71,11 +72,10 @@ export class CalendarService {
             `   The calendar will sync events from the Microsoft account (${msEmail}),\n` +
             `   NOT from the VMA user's expected mailbox (${vmaEmail}).`
           );
-          // We allow this now as per client request. The mismatched account will be successfully connected.
         }
       }
 
-      return await this.tokenModel.findOneAndUpdate(
+      tokenDoc = await this.tokenModel.findOneAndUpdate(
         { userId, provider: 'microsoft' },
         {
           accessToken: tokens.accessToken,
@@ -89,7 +89,6 @@ export class CalendarService {
         { upsert: true, new: true },
       );
     } catch (error) {
-      // Re-throw BadRequestException (identity mismatch) directly
       if (error instanceof BadRequestException) {
         throw error;
       }
@@ -98,13 +97,22 @@ export class CalendarService {
 
       // Check if we already have a valid token for this user
       const existingToken = await this.tokenModel.findOne({ userId, provider: 'microsoft' });
-      if (existingToken && existingToken.refreshToken) {
+      if (existingToken) {
         console.log('Using existing Microsoft Calendar token after duplicate code exchange attempt.');
-        return existingToken;
+        tokenDoc = existingToken;
+      } else {
+        throw error;
       }
-
-      throw error;
     }
+
+    // Trigger immediate calendar sync so meetings are available on dashboard
+    try {
+      await this.syncCalendar(userId);
+    } catch (syncErr) {
+      this.logger.error(`Initial sync after Microsoft connect failed for userId=${userId}:`, syncErr);
+    }
+
+    return tokenDoc;
   }
 
   // SYNC CALENDAR EVENTS
