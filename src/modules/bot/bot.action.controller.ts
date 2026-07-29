@@ -47,19 +47,38 @@ export class BotActionController {
         }
       }
     } else {
-      // Create an ad-hoc meeting in the database first
-      targetMeeting = await this.meetingModel.create({
-        title: dto.title,
-        platform: dto.platform,
+      // Check if an existing meeting with this link already exists
+      targetMeeting = await this.meetingModel.findOne({
         meetingLink: dto.meetingLink,
-        source: 'manual',
-        provider: 'vma',
-        status: 'LIVE',
-        createdBy: userId,
-        hostId: userId,
-        startTime: new Date(),
-        endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
       });
+
+      if (!targetMeeting) {
+        // Create an ad-hoc meeting in the database
+        targetMeeting = await this.meetingModel.create({
+          title: dto.title,
+          platform: dto.platform,
+          meetingLink: dto.meetingLink,
+          source: 'manual',
+          provider: 'vma',
+          status: 'LIVE',
+          createdBy: userId,
+          hostId: userId,
+          startTime: new Date(),
+          endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
+        });
+      }
+    }
+
+    // Check if bot was already deployed or is currently joining
+    if (
+      targetMeeting.recallBotId ||
+      ['joining', 'joined', 'recording'].includes(targetMeeting.botStatus)
+    ) {
+      this.logger.log(`Bot already deployed or joining for meeting ${targetMeeting._id}`);
+      return {
+        message: 'Bot already deployed or joining for this meeting',
+        meetingId: targetMeeting._id,
+      };
     }
 
     // Trigger the bot immediately

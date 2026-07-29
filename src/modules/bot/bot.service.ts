@@ -51,25 +51,41 @@ export class BotService {
 
     if (!apiKey || !baseUrl) {
       this.logger.error('Recall.ai API Key or Base URL is missing.');
-      return;
+      return { success: false, reason: 'Missing API credentials' };
+    }
+
+    // Atomically transition status to 'joining' only if no bot has been spawned yet and not currently joining
+    const lockedMeeting = await this.meetingModel.findOneAndUpdate(
+      {
+        _id: meeting._id,
+        $and: [
+          { $or: [{ recallBotId: { $exists: false } }, { recallBotId: null }, { recallBotId: '' }] },
+          { $or: [{ botStatus: { $exists: false } }, { botStatus: { $in: ['none', 'error', null, ''] } }] }
+        ]
+      },
+      { botStatus: 'joining' },
+      { new: true, runValidators: false }
+    );
+
+    if (!lockedMeeting) {
+      this.logger.warn(`Bot join skipped for meeting ${meeting._id}: already joining, joined, or recallBotId exists.`);
+      return { success: false, reason: 'Bot already active or joining' };
     }
 
     try {
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'joining' }, { runValidators: false });
-
       const response = await firstValueFrom(
         this.httpService.post(
           `${baseUrl}/bot`,
           {
-            meeting_url: meeting.meetingLink,
+            meeting_url: lockedMeeting.meetingLink,
             bot_name: botName,
-            metadata: { meetingId: meeting._id.toString() },
+            metadata: { meetingId: lockedMeeting._id.toString() },
             recording_config: {
               transcript: {
                 provider: {
                   recallai_streaming: {
                     mode: 'prioritize_accuracy',
-                    language_code: 'en' // or your target language
+                    language_code: 'en'
                   }
                 }
               }
@@ -85,16 +101,18 @@ export class BotService {
       );
 
       const botId = response.data.id;
-      this.logger.log(`Successfully requested bot for meeting ${meeting._id}. Bot ID: ${botId}`);
+      this.logger.log(`Successfully requested bot for meeting ${lockedMeeting._id}. Bot ID: ${botId}`);
 
-      await this.meetingModel.findByIdAndUpdate(meeting._id, {
+      await this.meetingModel.findByIdAndUpdate(lockedMeeting._id, {
         recallBotId: botId,
         botStatus: 'joining'
       }, { runValidators: false });
 
+      return { success: true, botId };
     } catch (error: any) {
-      this.logger.error(`Failed to trigger bot for meeting ${meeting._id}`, error.response?.data || error.message);
-      await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'error' }, { runValidators: false });
+      this.logger.error(`Failed to trigger bot for meeting ${lockedMeeting._id}`, error.response?.data || error.message);
+      await this.meetingModel.findByIdAndUpdate(lockedMeeting._id, { botStatus: 'error' }, { runValidators: false });
+      return { success: false, error: error.message };
     }
   }
 
@@ -180,15 +198,12 @@ export class BotService {
         meeting_title: meeting.title,
         meeting_date: meeting.startTime?.toISOString() || new Date().toISOString(),
       };
-      console.log(payload, "PAYLOAD")
       // 2. Fetch JSON Summary
       const analysisRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/analyse`, payload)
       );
 
       const summaryData = analysisRes.data;
-      console.log(transcriptText, "Transcript Text")
-      console.log(summaryData, "SummaryData")
       // 3. Update Meeting with Summary Data
       await this.meetingModel.findByIdAndUpdate(meeting._id, {
         summaryData: { ...summaryData, transcript: transcriptText }

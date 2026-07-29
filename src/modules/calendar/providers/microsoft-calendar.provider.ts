@@ -167,11 +167,11 @@ export class MicrosoftCalendarProvider {
     });
 
     const startOfRange = new Date();
-    startOfRange.setDate(startOfRange.getDate() - 30);
+    startOfRange.setDate(startOfRange.getDate() - 14);
     startOfRange.setHours(0, 0, 0, 0);
 
     const endOfRange = new Date();
-    endOfRange.setFullYear(endOfRange.getFullYear() + 1);
+    endOfRange.setDate(endOfRange.getDate() + 30);
 
     let allEvents: any[] = [];
     

@@ -43,8 +43,11 @@ export class GoogleCalendarProvider {
     });
 
     const startOfRange = new Date();
-    startOfRange.setDate(startOfRange.getDate() - 30);
+    startOfRange.setDate(startOfRange.getDate() - 14);
     startOfRange.setHours(0, 0, 0, 0);
+
+    const endOfRange = new Date();
+    endOfRange.setDate(endOfRange.getDate() + 30);
 
     let allEvents: any[] = [];
     let pageToken = undefined;
@@ -53,6 +56,7 @@ export class GoogleCalendarProvider {
       const res: any = await calendar.events.list({
         calendarId: 'primary',
         timeMin: startOfRange.toISOString(),
+        timeMax: endOfRange.toISOString(),
         maxResults: 250,
         singleEvents: true,
         orderBy: 'startTime',
