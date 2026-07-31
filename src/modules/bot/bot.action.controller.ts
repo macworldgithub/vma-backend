@@ -52,11 +52,18 @@ export class BotActionController {
         meetingLink: dto.meetingLink,
       });
 
+      // Normalize platform value so it is consistent with the cron filter
+      const normalizedPlatform = dto.platform === 'microsoft_teams'
+        ? 'teams'
+        : dto.platform === 'google_meet'
+          ? 'google'
+          : dto.platform;
+
       if (!targetMeeting) {
         // Create an ad-hoc meeting in the database
         targetMeeting = await this.meetingModel.create({
           title: dto.title,
-          platform: dto.platform,
+          platform: normalizedPlatform,
           meetingLink: dto.meetingLink,
           source: 'manual',
           provider: 'vma',
@@ -69,24 +76,46 @@ export class BotActionController {
       }
     }
 
-    // Check if bot was already deployed or is currently joining
-    if (
-      targetMeeting.recallBotId ||
-      ['joining', 'joined', 'recording'].includes(targetMeeting.botStatus)
-    ) {
-      this.logger.log(`Bot already deployed or joining for meeting ${targetMeeting._id}`);
+    // Check if bot is currently active (joining / in call)
+    if (['joining', 'joined', 'recording', 'bot.joining_call', 'bot.in_waiting_room', 'bot.in_call_recording', 'bot.in_call_not_recording'].includes(targetMeeting.botStatus)) {
+      this.logger.log(`Bot already active for meeting ${targetMeeting._id}`);
       return {
-        message: 'Bot already deployed or joining for this meeting',
+        message: 'Bot is already in the meeting',
         meetingId: targetMeeting._id,
       };
     }
 
-    // Trigger the bot immediately
-    await this.botService.joinMeeting(targetMeeting);
+    // Reset stale botStatus so the atomic lock inside joinMeeting() does not
+    // silently block re-deployment of a previously-used meeting link.
+    if (
+      targetMeeting.recallBotId ||
+      (targetMeeting.botStatus && !['none', 'error', null, '', undefined].includes(targetMeeting.botStatus))
+    ) {
+      this.logger.log(`Resetting stale bot state for meeting ${targetMeeting._id} (was: ${targetMeeting.botStatus})`);
+      await this.meetingModel.findByIdAndUpdate(
+        targetMeeting._id,
+        { botStatus: 'none', recallBotId: null },
+        { runValidators: false }
+      );
+      targetMeeting = await this.meetingModel.findById(targetMeeting._id);
+    }
+
+    // Trigger the bot and check the result — do NOT silently swallow failures
+    const result = await this.botService.joinMeeting(targetMeeting);
+
+    if (!result?.success) {
+      this.logger.warn(`joinMeeting() failed for meeting ${targetMeeting._id}: ${result?.reason || result?.error}`);
+      return {
+        message: result?.reason || result?.error || 'Bot could not be deployed. Please try again.',
+        meetingId: targetMeeting._id,
+        success: false,
+      };
+    }
 
     return {
       message: 'Bot summoned successfully',
       meetingId: targetMeeting._id,
+      success: true,
     };
   }
 

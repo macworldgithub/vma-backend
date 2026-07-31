@@ -35,7 +35,7 @@ export class BotService {
       meetingLink: { $exists: true, $ne: '' },
       botStatus: { $in: ['none', null] },
       startTime: { $gte: startTimeLimit, $lte: fiveMinutesFromNow },
-      platform: { $in: ['teams', 'zoom', 'google'] }
+      platform: { $in: ['teams', 'microsoft_teams', 'zoom', 'google', 'google_meet'] }
     });
 
     for (const meeting of upcomingMeetings) {
