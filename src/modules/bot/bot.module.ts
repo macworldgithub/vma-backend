@@ -25,5 +25,6 @@ import { RealtimeModule } from '../realtime/realtime.module';
   ],
   providers: [BotService, JwtGuard],
   controllers: [BotController, BotActionController],
+  exports: [BotService],
 })
 export class BotModule { }

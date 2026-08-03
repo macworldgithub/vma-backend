@@ -6,6 +6,7 @@ import { GoogleCalendarProvider } from './providers/google-calendar.provider';
 import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provider';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 import { UsersService } from '../users/users.service';
+import { BotService } from '../bot/bot.service';
 
 @Injectable()
 export class CalendarService {
@@ -18,6 +19,7 @@ export class CalendarService {
     private microsoftProvider: MicrosoftCalendarProvider,
     private ingestionService: CalendarIngestionService,
     private usersService: UsersService,
+    private botService: BotService,
   ) { }
 
   // CONNECT GOOGLE
@@ -222,6 +224,13 @@ export class CalendarService {
           results.push({ provider: 'microsoft', status: 'error', error: error.message });
         }
       }
+    }
+
+    // Trigger instant auto-deploy for any newly synced upcoming or live meetings
+    try {
+      await this.botService.checkUpcomingMeetings();
+    } catch (botErr: any) {
+      this.logger.error(`Auto-deploy bot after calendar sync failed for userId=${userId}:`, botErr);
     }
 
     return results;

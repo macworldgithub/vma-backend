@@ -25,21 +25,39 @@ export class BotService {
 
   @Cron(CronExpression.EVERY_MINUTE)
   async checkUpcomingMeetings() {
-    this.logger.debug('Checking for upcoming meetings to send bot...');
+    this.logger.debug('Checking for upcoming/live meetings to auto-deploy bot...');
     const now = new Date();
-    const fiveMinutesFromNow = new Date(now.getTime() + 5 * 60000);
-
-    const startTimeLimit = new Date(now.getTime() - 15 * 60000);
+    const tenMinutesFromNow = new Date(now.getTime() + 10 * 60000);
+    const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60000);
 
     const upcomingMeetings = await this.meetingModel.find({
       meetingLink: { $exists: true, $ne: '' },
-      botStatus: { $in: ['none', null] },
-      startTime: { $gte: startTimeLimit, $lte: fiveMinutesFromNow },
-      platform: { $in: ['teams', 'microsoft_teams', 'zoom', 'google', 'google_meet'] }
+      platform: { $in: ['teams', 'microsoft_teams', 'zoom', 'google', 'google_meet'] },
+      $and: [
+        {
+          $or: [
+            { recallBotId: { $exists: false } },
+            { recallBotId: null },
+            { recallBotId: '' },
+          ],
+        },
+        {
+          $or: [
+            { botStatus: { $exists: false } },
+            { botStatus: { $in: ['none', 'error', null, ''] } },
+          ],
+        },
+        {
+          $or: [
+            { startTime: { $gte: thirtyMinutesAgo, $lte: tenMinutesFromNow } },
+            { startTime: { $lte: now }, endTime: { $gte: now } },
+          ],
+        },
+      ],
     });
 
     for (const meeting of upcomingMeetings) {
-      this.logger.log(`Triggering bot for meeting: ${meeting.title} (${meeting.id})`);
+      this.logger.log(`Auto-deploying bot for meeting: ${meeting.title} (${meeting._id})`);
       await this.joinMeeting(meeting);
     }
   }

@@ -12,6 +12,7 @@ import { AuthModule } from '../auth/auth.module';
 import { CalendarIngestionService } from './ingestion/calendar-ingestion.service';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
 import { UsersModule } from '../users/users.module';
+import { BotModule } from '../bot/bot.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { UsersModule } from '../users/users.module';
     ]),
     AuthModule,
     UsersModule,
+    BotModule,
   ],
   controllers: [CalendarController],
   providers: [
@@ -30,4 +32,4 @@ import { UsersModule } from '../users/users.module';
     CalendarIngestionService,
   ],
 })
-export class CalendarModule { }
+export class CalendarModule { }
