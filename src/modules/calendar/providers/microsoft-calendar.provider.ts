@@ -177,6 +177,7 @@ export class MicrosoftCalendarProvider {
     
     let response = await client
       .api('/me/calendarView')
+      .header('Prefer', 'outlook.timezone="UTC"')
       .query({
         startDateTime: startOfRange.toISOString(),
         endDateTime: endOfRange.toISOString(),
@@ -190,7 +191,10 @@ export class MicrosoftCalendarProvider {
     }
 
     while (response['@odata.nextLink']) {
-      response = await client.api(response['@odata.nextLink']).get();
+      response = await client
+        .api(response['@odata.nextLink'])
+        .header('Prefer', 'outlook.timezone="UTC"')
+        .get();
       if (response.value) {
         allEvents = allEvents.concat(response.value);
       }

@@ -32,7 +32,6 @@ export class BotService {
 
     const upcomingMeetings = await this.meetingModel.find({
       meetingLink: { $exists: true, $ne: '' },
-      platform: { $in: ['teams', 'microsoft_teams', 'zoom', 'google', 'google_meet'] },
       $and: [
         {
           $or: [
@@ -56,7 +55,17 @@ export class BotService {
       ],
     });
 
+    // Deduplicate upcoming meetings by meetingLink so we only attempt one deployment per meeting URL
+    const processedLinks = new Set<string>();
+
     for (const meeting of upcomingMeetings) {
+      if (!meeting.meetingLink) continue;
+      const normalizedLink = meeting.meetingLink.trim().replace(/\/$/, '');
+      if (processedLinks.has(normalizedLink)) {
+        continue;
+      }
+      processedLinks.add(normalizedLink);
+
       this.logger.log(`Auto-deploying bot for meeting: ${meeting.title} (${meeting._id})`);
       await this.joinMeeting(meeting);
     }
@@ -72,21 +81,43 @@ export class BotService {
       return { success: false, reason: 'Missing API credentials' };
     }
 
-    // Atomically transition status to 'joining' only if no bot has been spawned yet and not currently joining
-    const lockedMeeting = await this.meetingModel.findOneAndUpdate(
+    if (!meeting.meetingLink) {
+      this.logger.error(`Meeting ${meeting._id} missing meetingLink.`);
+      return { success: false, reason: 'Missing meeting link' };
+    }
+
+    const rawLink = meeting.meetingLink.trim();
+    const cleanLink = rawLink.replace(/\/$/, '');
+    const linkVariants = Array.from(new Set([rawLink, cleanLink, cleanLink + '/']));
+
+    // Check if ANY meeting with this meetingLink already has an active bot or valid recallBotId
+    const activeMeeting = await this.meetingModel.findOne({
+      meetingLink: { $in: linkVariants },
+      $or: [
+        { recallBotId: { $exists: true, $nin: [null, ''] } },
+        { botStatus: { $in: ['joining', 'joined', 'recording', 'bot.joining_call', 'bot.in_waiting_room', 'bot.in_call_recording', 'bot.in_call_not_recording'] } }
+      ]
+    });
+
+    if (activeMeeting) {
+      this.logger.warn(`Bot join skipped for meeting link ${cleanLink}: bot already active or recallBotId exists on meeting ${activeMeeting._id}`);
+      return { success: false, reason: 'Bot already active or joining' };
+    }
+
+    // Atomically transition status to 'joining' for ALL meetings sharing this meetingLink
+    const updateResult = await this.meetingModel.updateMany(
       {
-        _id: meeting._id,
+        meetingLink: { $in: linkVariants },
         $and: [
           { $or: [{ recallBotId: { $exists: false } }, { recallBotId: null }, { recallBotId: '' }] },
           { $or: [{ botStatus: { $exists: false } }, { botStatus: { $in: ['none', 'error', null, ''] } }] }
         ]
       },
-      { botStatus: 'joining' },
-      { new: true, runValidators: false }
+      { $set: { botStatus: 'joining' } }
     );
 
-    if (!lockedMeeting) {
-      this.logger.warn(`Bot join skipped for meeting ${meeting._id}: already joining, joined, or recallBotId exists.`);
+    if (!updateResult.matchedCount || updateResult.modifiedCount === 0) {
+      this.logger.warn(`Bot join skipped for meeting ${meeting._id}: already joining or active.`);
       return { success: false, reason: 'Bot already active or joining' };
     }
 
@@ -95,9 +126,14 @@ export class BotService {
         this.httpService.post(
           `${baseUrl}/bot`,
           {
-            meeting_url: lockedMeeting.meetingLink,
+            meeting_url: rawLink,
             bot_name: botName,
-            metadata: { meetingId: lockedMeeting._id.toString() },
+            metadata: { meetingId: meeting._id.toString() },
+            automatic_leave: {
+              everyone_left_timeout: {
+                timeout: 7200 // 2 hours: bot stays in meeting when participants leave temporarily
+              }
+            },
             recording_config: {
               transcript: {
                 provider: {
@@ -119,17 +155,23 @@ export class BotService {
       );
 
       const botId = response.data.id;
-      this.logger.log(`Successfully requested bot for meeting ${lockedMeeting._id}. Bot ID: ${botId}`);
+      this.logger.log(`Successfully requested bot for meeting link ${cleanLink}. Bot ID: ${botId}`);
 
-      await this.meetingModel.findByIdAndUpdate(lockedMeeting._id, {
-        recallBotId: botId,
-        botStatus: 'joining'
-      }, { runValidators: false });
+      // Update all meeting records sharing this link with recallBotId
+      await this.meetingModel.updateMany(
+        { meetingLink: { $in: linkVariants } },
+        { $set: { recallBotId: botId, botStatus: 'joining' } },
+        { runValidators: false }
+      );
 
       return { success: true, botId };
     } catch (error: any) {
-      this.logger.error(`Failed to trigger bot for meeting ${lockedMeeting._id}`, error.response?.data || error.message);
-      await this.meetingModel.findByIdAndUpdate(lockedMeeting._id, { botStatus: 'error' }, { runValidators: false });
+      this.logger.error(`Failed to trigger bot for meeting link ${cleanLink}`, error.response?.data || error.message);
+      await this.meetingModel.updateMany(
+        { meetingLink: { $in: linkVariants }, botStatus: 'joining' },
+        { $set: { botStatus: 'error' } },
+        { runValidators: false }
+      );
       return { success: false, error: error.message };
     }
   }
@@ -223,9 +265,11 @@ export class BotService {
 
       const summaryData = analysisRes.data;
       // 3. Update Meeting with Summary Data
-      await this.meetingModel.findByIdAndUpdate(meeting._id, {
-        summaryData: { ...summaryData, transcript: transcriptText }
-      }, { runValidators: false });
+      await this.meetingModel.updateMany(
+        { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
+        { $set: { summaryData: { ...summaryData, transcript: transcriptText } } },
+        { runValidators: false }
+      );
 
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(

@@ -87,7 +87,10 @@ export class CalendarIngestionService {
       if (!dateObj) return undefined;
       if (dateObj.dateTime) {
         const dt = dateObj.dateTime;
-        return new Date(dt.endsWith('Z') ? dt : dt + 'Z');
+        if (dt.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(dt)) {
+          return new Date(dt);
+        }
+        return new Date(dt + 'Z');
       }
       return dateObj.date ? new Date(dateObj.date) : undefined;
     };
