@@ -68,7 +68,20 @@ export class RoomService {
     }
 
     if (room.status === RoomStatus.ENDED) {
-      throw new BadRequestException('This meeting has ended');
+      // Check if the underlying meeting's scheduled timeframe is still active
+      const meeting = await this.meetingModel.findById(room.meetingId);
+      const now = new Date();
+      if (meeting && meeting.endTime && new Date(meeting.endTime) > now) {
+        // Re-open room since scheduled timeframe is not over
+        room.status = RoomStatus.ACTIVE;
+        room.endedAt = undefined;
+        meeting.status = MeetingStatus.LIVE;
+        meeting.botStatus = 'none';
+        meeting.recallBotId = undefined;
+        await meeting.save();
+      } else {
+        throw new BadRequestException('This meeting has ended');
+      }
     }
 
     if (room.isLocked) {
