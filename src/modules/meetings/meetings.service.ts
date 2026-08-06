@@ -4,6 +4,7 @@ import { Model, isValidObjectId } from 'mongoose';
 import { Meeting, MeetingStatus } from './schemas/meeting.schema';
 import { RoomService } from '../realtime/services/room.service';
 import { ConfigService } from '@nestjs/config';
+import { BotService } from '../bot/bot.service';
 
 @Injectable()
 export class MeetingsService {
@@ -11,6 +12,7 @@ export class MeetingsService {
     @InjectModel(Meeting.name) private model: Model<Meeting>,
     private roomService: RoomService,
     private configService: ConfigService,
+    private botService: BotService,
   ) { }
 
   /**
@@ -110,6 +112,13 @@ export class MeetingsService {
     }
 
     await meeting.save();
+
+    // Make the Recall bot leave the call immediately if present
+    if (meeting.recallBotId) {
+      this.botService.leaveMeetingBot(meeting.recallBotId).catch((err) => {
+        console.error(`Error requesting bot to leave call for meeting ${meetingId}:`, err);
+      });
+    }
 
     // End the room as well
     if (meeting.roomId) {

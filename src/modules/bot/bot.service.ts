@@ -131,7 +131,7 @@ export class BotService {
             metadata: { meetingId: meeting._id.toString() },
             automatic_leave: {
               everyone_left_timeout: {
-                timeout: 7200 // 2 hours: bot stays in meeting when participants leave temporarily
+                timeout: 300 // 5 minutes (reduced from 7200/2 hours to send reports faster)
               }
             },
             recording_config: {
@@ -345,5 +345,34 @@ export class BotService {
     );
 
     return Buffer.from(pdfRes.data);
+  }
+
+  async leaveMeetingBot(botId: string) {
+    const apiKey = this.configService.get<string>('RECALL_API_KEY');
+    const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
+
+    if (!apiKey || !baseUrl) {
+      this.logger.error('Recall.ai API Key or Base URL is missing.');
+      return;
+    }
+
+    try {
+      this.logger.log(`Instructing Recall bot ${botId} to leave call...`);
+      await firstValueFrom(
+        this.httpService.post(
+          `${baseUrl}/bot/${botId}/leave_call/`,
+          {},
+          {
+            headers: {
+              'Authorization': `Token ${apiKey}`,
+              'Content-Type': 'application/json'
+            }
+          }
+        )
+      );
+      this.logger.log(`Successfully sent leave_call for bot ${botId}`);
+    } catch (error: any) {
+      this.logger.error(`Failed to send leave_call for bot ${botId}:`, error.response?.data || error.message);
+    }
   }
 }

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Meeting, MeetingSchema } from '../meetings/schemas/meeting.schema';
 import { User, UserSchema } from '../users/users.schema';
@@ -17,7 +17,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
     HttpModule,
     MailModule,
     JwtCommonModule,
-    RealtimeModule,
+    forwardRef(() => RealtimeModule),
     MongooseModule.forFeature([
       { name: Meeting.name, schema: MeetingSchema },
       { name: User.name, schema: UserSchema },
