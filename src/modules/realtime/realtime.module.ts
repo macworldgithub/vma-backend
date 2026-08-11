@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule } from '@nestjs/config';
 
@@ -8,6 +8,7 @@ import { ChatService } from './services/chat.service';
 import { TranscriptService } from './services/transcript.service';
 import { DeepgramService } from './services/deepgram.service';
 import { MediasoupModule } from '../mediasoup/mediasoup.module';
+import { BotModule } from '../bot/bot.module';
 
 import { Room, RoomSchema } from './schemas/room.schema';
 import { MeetingChat, MeetingChatSchema } from './schemas/meeting-chat.schema';
@@ -19,6 +20,7 @@ import { JwtCommonModule } from 'src/common/jwt.module';
   imports: [
     ConfigModule,
     MediasoupModule,
+    forwardRef(() => BotModule),
     MongooseModule.forFeature([
       { name: Room.name, schema: RoomSchema },
       { name: MeetingChat.name, schema: MeetingChatSchema },

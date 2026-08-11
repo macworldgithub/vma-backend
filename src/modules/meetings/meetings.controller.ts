@@ -122,6 +122,8 @@ export class MeetingsController {
       title: meeting.title,
       hostId: meeting.hostId,
       status: meeting.status,
+      startTime: meeting.startTime,
+      endTime: meeting.endTime,
       meetingCode: code,
       roomId: room?.roomId,
       roomStatus: room?.status,

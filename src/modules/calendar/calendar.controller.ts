@@ -1,4 +1,4 @@
-import { Controller, Get, Delete, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import {
   ApiTags,
   ApiBearerAuth,
@@ -145,10 +145,10 @@ export class CalendarController {
 
   @UseGuards(JwtGuard)
   @Delete('disconnect/:provider')
-  @ApiOperation({ summary: 'Disconnect calendar provider and clear synced events' })
-  @ApiParam({ name: 'provider', enum: ['google', 'microsoft'] })
-  @ApiResponse({ status: 200, description: 'Provider disconnected successfully' })
-  disconnectProvider(@Param('provider') provider: 'google' | 'microsoft', @Req() req: any) {
+  @ApiOperation({ summary: 'Disconnect a calendar provider' })
+  @ApiParam({ name: 'provider', enum: ['google', 'microsoft'], description: 'Calendar provider to disconnect' })
+  @ApiResponse({ status: 200, description: 'Calendar disconnected successfully' })
+  async disconnect(@Param('provider') provider: 'google' | 'microsoft', @Req() req: any) {
     return this.calendarService.disconnectProvider(req.user.sub, provider);
   }
 }

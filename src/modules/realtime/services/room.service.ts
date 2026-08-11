@@ -1,9 +1,10 @@
-import { Injectable, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Room, RoomStatus } from '../schemas/room.schema';
 import { Meeting, MeetingStatus } from '../../meetings/schemas/meeting.schema';
 import { randomUUID } from 'crypto';
+import { BotService } from '../../bot/bot.service';
 
 @Injectable()
 export class RoomService {
@@ -12,6 +13,8 @@ export class RoomService {
     private roomModel: Model<Room>,
     @InjectModel(Meeting.name)
     private meetingModel: Model<Meeting>,
+    @Inject(forwardRef(() => BotService))
+    private botService: BotService,
   ) {}
 
   /**
@@ -68,7 +71,20 @@ export class RoomService {
     }
 
     if (room.status === RoomStatus.ENDED) {
-      throw new BadRequestException('This meeting has ended');
+      // Check if the underlying meeting's scheduled timeframe is still active
+      const meeting = await this.meetingModel.findById(room.meetingId);
+      const now = new Date();
+      if (meeting && meeting.endTime && new Date(meeting.endTime) > now) {
+        // Re-open room since scheduled timeframe is not over
+        room.status = RoomStatus.ACTIVE;
+        room.endedAt = undefined;
+        meeting.status = MeetingStatus.LIVE;
+        meeting.botStatus = 'none';
+        meeting.recallBotId = undefined;
+        await meeting.save();
+      } else {
+        throw new BadRequestException('This meeting has ended');
+      }
     }
 
     if (room.isLocked) {
@@ -163,10 +179,19 @@ export class RoomService {
     await room.save();
 
     // Sync with Meeting status
-    await this.meetingModel.updateOne(
-      { _id: room.meetingId },
-      { status: MeetingStatus.ENDED, actualEndTime: new Date() }
-    );
+    const meeting = await this.meetingModel.findById(room.meetingId);
+    if (meeting) {
+      meeting.status = MeetingStatus.ENDED;
+      meeting.actualEndTime = new Date();
+      await meeting.save();
+
+      // Trigger Recall bot to leave call immediately
+      if (meeting.recallBotId) {
+        this.botService.leaveMeetingBot(meeting.recallBotId).catch((err) => {
+          console.error(`Error requesting bot to leave call for room ${roomId}:`, err);
+        });
+      }
+    }
 
     return room;
   }

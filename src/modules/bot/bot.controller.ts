@@ -57,12 +57,12 @@ export class BotController {
       case 'bot.in_call_recording':
       case 'bot.in_call_not_recording':
         this.logger.log(`Bot ${botId} status changed to ${payload.event}`);
-        await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: payload.event }, { runValidators: false });
+        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { botStatus: payload.event } }, { runValidators: false });
         break;
 
       case 'bot.call_ended':
         this.logger.log(`Meeting ended for Bot ${botId}`);
-        await this.meetingModel.findByIdAndUpdate(meeting._id, { status: 'ENDED' }, { runValidators: false });
+        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { status: 'ENDED', botStatus: 'call_ended' } }, { runValidators: false });
         break;
 
       case 'bot.done':
@@ -71,7 +71,7 @@ export class BotController {
         // an async model under the hood). Don't fetch yet — wait for
         // transcript.done below, which fires once the transcript is actually ready.
         this.logger.log(`Bot ${botId} done. Awaiting transcript.done before processing.`);
-        await this.meetingModel.findByIdAndUpdate(meeting._id, { botStatus: 'bot.done' }, { runValidators: false });
+        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { botStatus: 'bot.done' } }, { runValidators: false });
         break;
 
       case 'transcript.done':
@@ -79,7 +79,7 @@ export class BotController {
           const transcriptId = data.transcript?.id;
           this.logger.log(`Transcript ${transcriptId} ready for Bot ${botId}, processing...`);
           if (transcriptId) {
-            await this.meetingModel.findByIdAndUpdate(meeting._id, { transcriptId }, { runValidators: false });
+            await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { transcriptId } }, { runValidators: false });
           }
           this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
             this.logger.error(`Error processing transcript: ${err.message}`);

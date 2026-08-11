@@ -203,11 +203,14 @@ export class CalendarService {
               } else {
                 token.expiryDate = new Date(Date.now() + 3600 * 1000);
               }
-              // Update identity fields on refresh
-              if (credentials.microsoftEmail) {
+              // IMPORTANT: Never overwrite microsoftEmail/microsoftUserId once set.
+              // The MSAL singleton cache is shared across all users and can return
+              // a different user's identity during refresh, causing email swap bugs.
+              // The identity established at first OAuth connection is the source of truth.
+              if (!token.microsoftEmail && credentials.microsoftEmail) {
                 token.microsoftEmail = credentials.microsoftEmail;
               }
-              if (credentials.microsoftUserId) {
+              if (!token.microsoftUserId && credentials.microsoftUserId) {
                 token.microsoftUserId = credentials.microsoftUserId;
               }
               await token.save();
