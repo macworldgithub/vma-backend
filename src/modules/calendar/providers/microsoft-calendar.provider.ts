@@ -29,15 +29,27 @@ export class MicrosoftCalendarProvider {
     });
   }
 
-  // Helper to extract refresh token from MSAL cache
-  private getRefreshTokenFromCache(): string | undefined {
+  // Helper to extract refresh token from MSAL cache for a specific homeAccountId
+  private getRefreshTokenFromCache(homeAccountId?: string): string | undefined {
     try {
       const serialized = this.msalClient.getTokenCache().serialize();
       const cache = JSON.parse(serialized);
       if (cache.RefreshToken) {
-        const keys = Object.keys(cache.RefreshToken);
-        if (keys.length > 0) {
-          return cache.RefreshToken[keys[0]].secret;
+        const refreshTokens = Object.values(cache.RefreshToken) as any[];
+        if (homeAccountId) {
+          const match = refreshTokens.find(
+            (rt: any) =>
+              rt.home_account_id === homeAccountId ||
+              (rt.home_account_id && homeAccountId.includes(rt.home_account_id)) ||
+              (rt.home_account_id && rt.home_account_id.includes(homeAccountId)),
+          );
+          if (match?.secret) {
+            return match.secret;
+          }
+        }
+        // Fallback ONLY if no homeAccountId specified and exactly one token is in cache
+        if (!homeAccountId && refreshTokens.length === 1) {
+          return refreshTokens[0].secret;
         }
       }
     } catch (e) {
@@ -105,7 +117,8 @@ export class MicrosoftCalendarProvider {
       throw new Error('Failed to exchange code for Microsoft tokens');
     }
 
-    const refreshToken = this.getRefreshTokenFromCache();
+    const homeAccountId = tokenResponse.account?.homeAccountId;
+    const refreshToken = this.getRefreshTokenFromCache(homeAccountId);
 
     // Extract the actual Microsoft identity from the access token
     const claims = this.decodeJwtPayload(tokenResponse.accessToken);
@@ -143,7 +156,8 @@ export class MicrosoftCalendarProvider {
       throw new Error('Failed to refresh Microsoft tokens');
     }
 
-    const newRefreshToken = this.getRefreshTokenFromCache() || refreshToken;
+    const homeAccountId = tokenResponse.account?.homeAccountId;
+    const newRefreshToken = this.getRefreshTokenFromCache(homeAccountId) || refreshToken;
 
     const claims = this.decodeJwtPayload(tokenResponse.accessToken);
     const microsoftEmail = tokenResponse.account?.username || claims?.upn || claims?.unique_name || claims?.preferred_username || undefined;

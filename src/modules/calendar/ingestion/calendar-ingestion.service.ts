@@ -160,6 +160,15 @@ export class CalendarIngestionService {
       .sort({ startTime: 1 });
   }
 
+  async clearCalendarEvents(userId: string, provider: string) {
+    await this.meetingModel.deleteMany({
+      createdBy: userId,
+      provider: provider,
+      source: 'calendar',
+    });
+    this.logger.log(`Cleared all synced calendar events for userId=${userId}, provider=${provider}`);
+  }
+
   private isValidUrl(text: string): boolean {
     if (!text) return false;
     try {

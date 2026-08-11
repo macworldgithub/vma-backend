@@ -1,10 +1,11 @@
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Delete, Param, Query, Req, Res, UseGuards } from '@nestjs/common';
 import {
   ApiTags,
   ApiBearerAuth,
   ApiOperation,
   ApiQuery,
   ApiResponse,
+  ApiParam,
 } from '@nestjs/swagger';
 import { CalendarService } from './calendar.service';
 import { JwtGuard } from 'src/common/guards/jwt.guard';
@@ -140,5 +141,14 @@ export class CalendarController {
   @ApiOperation({ summary: 'Get Microsoft OAuth URL' })
   getMicrosoftUrl(@Req() req: any) {
     return this.calendarService.getMicrosoftAuthUrl(req.user.sub);
+  }
+
+  @UseGuards(JwtGuard)
+  @Delete('disconnect/:provider')
+  @ApiOperation({ summary: 'Disconnect calendar provider and clear synced events' })
+  @ApiParam({ name: 'provider', enum: ['google', 'microsoft'] })
+  @ApiResponse({ status: 200, description: 'Provider disconnected successfully' })
+  disconnectProvider(@Param('provider') provider: 'google' | 'microsoft', @Req() req: any) {
+    return this.calendarService.disconnectProvider(req.user.sub, provider);
   }
 }

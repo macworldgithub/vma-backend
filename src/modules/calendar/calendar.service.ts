@@ -170,6 +170,29 @@ export class CalendarService {
           if (token.expiryDate.getTime() < Date.now() + 60000) {
             if (token.refreshToken) {
               const credentials = await this.microsoftProvider.refreshTokens(token.refreshToken);
+
+              // Identity Safety Guard: Detect if refreshed token belongs to a different Microsoft account
+              if (
+                token.microsoftEmail &&
+                credentials.microsoftEmail &&
+                token.microsoftEmail.toLowerCase().trim() !== credentials.microsoftEmail.toLowerCase().trim()
+              ) {
+                this.logger.error(
+                  `⚠️ MICROSOFT TOKEN IDENTITY MISMATCH on refresh for userId=${userId}!\n` +
+                  ` Stored Microsoft Email: ${token.microsoftEmail}\n` +
+                  ` Refreshed Token Email: ${credentials.microsoftEmail}\n` +
+                  ` Deleting corrupted token document and clearing synced events.`
+                );
+                await this.tokenModel.deleteOne({ _id: token._id });
+                await this.ingestionService.clearCalendarEvents(userId, 'microsoft');
+                results.push({
+                  provider: 'microsoft',
+                  status: 'error',
+                  error: 'Token identity mismatch detected. Corrupted token removed. Please reconnect Microsoft Calendar.',
+                });
+                continue;
+              }
+
               currentAccessToken = credentials.accessToken!;
               token.accessToken = currentAccessToken;
               if (credentials.refreshToken) {
@@ -220,6 +243,7 @@ export class CalendarService {
 
           if (isAuthError) {
             await this.tokenModel.deleteOne({ userId, provider: 'microsoft' });
+            await this.ingestionService.clearCalendarEvents(userId, 'microsoft');
           }
           results.push({ provider: 'microsoft', status: 'error', error: error.message });
         }
@@ -266,6 +290,17 @@ export class CalendarService {
 
     return {
       url: this.microsoftProvider.getAuthUrl(userId, loginHint),
+    };
+  }
+
+  // DISCONNECT CALENDAR
+  async disconnectProvider(userId: string, provider: 'google' | 'microsoft') {
+    const deleted = await this.tokenModel.deleteOne({ userId, provider });
+    await this.ingestionService.clearCalendarEvents(userId, provider);
+    return {
+      status: 'success',
+      message: `${provider} calendar disconnected and synced events cleared`,
+      deletedCount: deleted.deletedCount,
     };
   }
 }
