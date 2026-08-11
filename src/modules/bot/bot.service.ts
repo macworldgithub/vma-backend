@@ -86,7 +86,7 @@ export class BotService {
       return { success: false, reason: 'Missing meeting link' };
     }
 
-    const rawLink = meeting.meetingLink.trim();
+    const rawLink = meeting.meetingLink.replace(/&amp;/g, '&').replace(/[\r\n\t]/g, '').trim();
     const cleanLink = rawLink.replace(/\/$/, '');
     const linkVariants = Array.from(new Set([rawLink, cleanLink, cleanLink + '/']));
 

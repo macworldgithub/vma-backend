@@ -96,13 +96,14 @@ export class CalendarIngestionService {
     };
 
     const bulkOps = validEvents.map((event) => {
-      const rawLink =
+      const rawLink = (
         event.onlineMeetingUrl ||
         event.onlineMeeting?.joinUrl ||
         (this.isValidUrl(event.location?.displayName) ? event.location.displayName : '') ||
         this.extractUrl(event.body?.content) ||
         this.findAnyMeetLink(event) ||
-        '';
+        ''
+      ).replace(/&amp;/g, '&').replace(/[\r\n\t]/g, '').trim();
 
       const meetingData = {
         title: event.subject || 'Untitled Meeting',
@@ -184,21 +185,21 @@ export class CalendarIngestionService {
 
   private extractUrl(text: string): string | null {
     if (!text) return null;
-    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    const urlRegex = /(https?:\/\/[^\s"'<>]+)/g;
     const match = text.match(urlRegex);
-    return match ? match[0] : null;
+    return match ? match[0].replace(/&amp;/g, '&') : null;
   }
 
   private findAnyMeetLink(event: any): string | null {
     const str = JSON.stringify(event);
-    const match = str.match(/https:\/\/(meet\.google\.com|zoom\.us|teams\.microsoft\.com)\/[^\s"']+/);
-    return match ? match[0] : null;
+    const match = str.match(/https:\/\/(meet\.google\.com|zoom\.us|teams\.microsoft\.com|teams\.live\.com)\/[^\s"'\\]+/);
+    return match ? match[0].replace(/&amp;/g, '&') : null;
   }
 
   private detectPlatform(link: string, defaultPlatform = 'google'): string {
     if (!link) return defaultPlatform;
     const lowerLink = link.toLowerCase();
-    if (lowerLink.includes('teams.microsoft.com')) return 'teams';
+    if (lowerLink.includes('teams.microsoft.com') || lowerLink.includes('teams.live.com')) return 'teams';
     if (lowerLink.includes('zoom.us')) return 'zoom';
     if (lowerLink.includes('meet.google.com')) return 'google';
     return defaultPlatform;
