@@ -75,6 +75,36 @@ export class Meeting {
   @Prop({ type: Object })
   summaryData?: any;
 
+  @Prop([String])
+  summarySentTo?: string[];
+
+  @Prop()
+  summarySentAt?: Date;
+
+  @Prop({ default: 'none' })
+  summaryStatus?: string; // 'none' | 'pending' | 'sent' | 'failed'
+
+  @Prop()
+  summaryError?: string;
+
+  @Prop()
+  organizerEmail?: string;
+
+  @Prop()
+  organizerName?: string;
+
+  @Prop()
+  microsoftAccount?: string;
+
+  @Prop()
+  botJoinedAt?: Date;
+
+  @Prop()
+  botLeftAt?: Date;
+
+  @Prop()
+  botErrorLog?: string;
+
   @Prop({ default: 10 })
   maxParticipants!: number;
 

@@ -57,21 +57,29 @@ export class BotController {
       case 'bot.in_call_recording':
       case 'bot.in_call_not_recording':
         this.logger.log(`Bot ${botId} status changed to ${payload.event}`);
-        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { botStatus: payload.event } }, { runValidators: false });
+        await this.meetingModel.updateMany(
+          { recallBotId: botId },
+          { $set: { botStatus: payload.event }, $setOnInsert: { botJoinedAt: new Date() } },
+          { runValidators: false }
+        );
         break;
 
       case 'bot.call_ended':
         this.logger.log(`Meeting ended for Bot ${botId}`);
-        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { status: 'ENDED', botStatus: 'call_ended' } }, { runValidators: false });
+        await this.meetingModel.updateMany(
+          { recallBotId: botId },
+          { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: new Date() } },
+          { runValidators: false }
+        );
         break;
 
       case 'bot.done':
-        // Bot has left the call, but the transcript may still be processing
-        // asynchronously (recallai_streaming in prioritize_accuracy mode uses
-        // an async model under the hood). Don't fetch yet — wait for
-        // transcript.done below, which fires once the transcript is actually ready.
         this.logger.log(`Bot ${botId} done. Awaiting transcript.done before processing.`);
-        await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { botStatus: 'bot.done' } }, { runValidators: false });
+        await this.meetingModel.updateMany(
+          { recallBotId: botId },
+          { $set: { botStatus: 'bot.done', botLeftAt: new Date() } },
+          { runValidators: false }
+        );
         break;
 
       case 'transcript.done':
@@ -91,6 +99,11 @@ export class BotController {
         {
           const transcriptId = data.transcript?.id;
           this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
+          await this.meetingModel.updateMany(
+            { recallBotId: botId },
+            { $set: { botErrorLog: JSON.stringify(data.data || {}) } },
+            { runValidators: false }
+          );
           this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
             this.logger.error(`Error processing transcript after failure: ${err.message}`);
           });

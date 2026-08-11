@@ -290,16 +290,35 @@ export class BotService {
       }
 
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
-      this.logger.log(`Finished processing transcript for meeting ${meeting._id}`);
+      this.logger.log(`Finished processing transcript and sent report to ${emailAddress} for meeting ${meeting._id}`);
 
-      // Clear recallBotId and set botStatus to 'none' so that if users rejoin before endTime, auto-deploy can dispatch a new bot
+      // Clear recallBotId and set botStatus to 'none', while logging summary delivery details
       await this.meetingModel.updateMany(
-        { recallBotId: botId },
-        { $set: { botStatus: 'none', recallBotId: null } },
+        { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
+        {
+          $set: {
+            botStatus: 'none',
+            recallBotId: null,
+            summarySentTo: [emailAddress],
+            summarySentAt: new Date(),
+            summaryStatus: 'sent',
+            summaryError: null,
+          }
+        },
         { runValidators: false }
       );
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
+      await this.meetingModel.updateMany(
+        { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
+        {
+          $set: {
+            summaryStatus: 'failed',
+            summaryError: error.message,
+          }
+        },
+        { runValidators: false }
+      );
     }
   }
 

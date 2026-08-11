@@ -113,6 +113,8 @@ export class CalendarIngestionService {
         endTime: parseMSDate(event.end),
         createdBy: userId,
         hostId: userId,
+        organizerEmail: event.organizer?.emailAddress?.address,
+        organizerName: event.organizer?.emailAddress?.name,
         participants:
           event.attendees?.map((a: any) => a.emailAddress?.address).filter(Boolean) || [],
         externalEventId: event.id,
