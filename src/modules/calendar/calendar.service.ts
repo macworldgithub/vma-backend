@@ -33,11 +33,11 @@ export class CalendarService implements OnModuleInit {
   }
 
   /**
-   * Background Cron Job: Syncs all connected Google & Microsoft calendars every 5 minutes.
+   * Background Cron Job: Syncs all connected Google & Microsoft calendars every minutes.
    * Ensures meetings scheduled in Outlook or Google Calendar are automatically pulled
    * into VMA and assigned AI bots even when users are not logged in.
    */
-  @Cron(CronExpression.EVERY_5_MINUTES)
+  @Cron(CronExpression.EVERY_MINUTE)
   async syncAllConnectedCalendars() {
     this.logger.log('Starting background calendar sync for all connected users...');
     try {
