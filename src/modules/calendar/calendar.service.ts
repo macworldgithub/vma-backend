@@ -1,6 +1,7 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { CalendarToken } from './schemas/calendar-token.schema';
 import { GoogleCalendarProvider } from './providers/google-calendar.provider';
 import { MicrosoftCalendarProvider } from './providers/microsoft-calendar.provider';
@@ -9,7 +10,7 @@ import { UsersService } from '../users/users.service';
 import { BotService } from '../bot/bot.service';
 
 @Injectable()
-export class CalendarService {
+export class CalendarService implements OnModuleInit {
   private readonly logger = new Logger(CalendarService.name);
 
   constructor(
@@ -21,6 +22,46 @@ export class CalendarService {
     private usersService: UsersService,
     private botService: BotService,
   ) { }
+
+  onModuleInit() {
+    // Run initial sync 10 seconds after server startup
+    setTimeout(() => {
+      this.syncAllConnectedCalendars().catch((err) =>
+        this.logger.error('Initial startup background calendar sync failed:', err),
+      );
+    }, 10000);
+  }
+
+  /**
+   * Background Cron Job: Syncs all connected Google & Microsoft calendars every 5 minutes.
+   * Ensures meetings scheduled in Outlook or Google Calendar are automatically pulled
+   * into VMA and assigned AI bots even when users are not logged in.
+   */
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async syncAllConnectedCalendars() {
+    this.logger.log('Starting background calendar sync for all connected users...');
+    try {
+      const userIds = await this.tokenModel.distinct('userId');
+      if (!userIds || userIds.length === 0) {
+        this.logger.debug('No connected calendars found for background sync.');
+        return;
+      }
+
+      this.logger.log(`Found ${userIds.length} user(s) with connected calendars to sync.`);
+
+      for (const userId of userIds) {
+        try {
+          await this.syncCalendar(userId.toString());
+        } catch (err: any) {
+          this.logger.error(`Background calendar sync failed for userId=${userId}:`, err?.message || err);
+        }
+      }
+
+      this.logger.log('Background calendar sync completed successfully.');
+    } catch (error: any) {
+      this.logger.error('Error during background calendar sync execution:', error?.message || error);
+    }
+  }
 
   // CONNECT GOOGLE
   async connectGoogle(userId: string, code: string) {
