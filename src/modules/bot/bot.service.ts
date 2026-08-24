@@ -329,15 +329,21 @@ export class BotService {
 
     let transcriptText = '';
 
-    if (meeting.recallBotId) {
+    // Check stored summaryData transcript from MongoDB first
+    if (meeting.summaryData?.transcript) {
+      transcriptText = meeting.summaryData.transcript;
+    }
+    // Otherwise try fetching directly from Recall if active/available
+    else if (meeting.transcriptId || meeting.recallBotId) {
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(meeting.recallBotId);
+        transcriptText = await this.fetchTranscriptFromRecall(meeting.transcriptId || meeting.recallBotId);
       } catch (err: any) {
         this.logger.warn(`Could not fetch transcript from Recall: ${err.message}`);
-        transcriptText = 'Transcript could not be retrieved from Recall.ai API.';
       }
-    } else {
-      // Fetch from ChatService
+    }
+
+    // Fallback to in-app room chat messages if transcript is still empty
+    if (!transcriptText || transcriptText === 'Transcript could not be retrieved from Recall.ai API.') {
       if (meeting.roomId) {
         const messages = await this.chatService.getMessages(meeting.roomId);
         transcriptText = messages.length > 0
