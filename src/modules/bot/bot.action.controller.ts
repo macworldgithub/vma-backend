@@ -47,10 +47,12 @@ export class BotActionController {
         }
       }
     } else {
-      // Check if an existing meeting with this link already exists
+      // Check if a current or upcoming meeting with this link exists
+      const now = new Date();
       targetMeeting = await this.meetingModel.findOne({
         meetingLink: dto.meetingLink,
-      });
+        endTime: { $gte: new Date(now.getTime() - 30 * 60000) },
+      }).sort({ startTime: -1 });
 
       // Normalize platform value so it is consistent with the cron filter
       const normalizedPlatform = dto.platform === 'microsoft_teams'

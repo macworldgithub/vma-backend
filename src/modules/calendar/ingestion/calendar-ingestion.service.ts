@@ -48,7 +48,10 @@ export class CalendarIngestionService {
       return {
         updateOne: {
           filter: { externalEventId: event.id, provider: 'google', createdBy: userId },
-          update: { $set: meetingData },
+          update: {
+            $set: meetingData,
+            $setOnInsert: { botStatus: 'none', recallBotId: null },
+          },
           upsert: true,
         },
       };
@@ -126,7 +129,10 @@ export class CalendarIngestionService {
       return {
         updateOne: {
           filter: { externalEventId: event.id, provider: 'microsoft', createdBy: userId },
-          update: { $set: meetingData },
+          update: {
+            $set: meetingData,
+            $setOnInsert: { botStatus: 'none', recallBotId: null },
+          },
           upsert: true,
         },
       };

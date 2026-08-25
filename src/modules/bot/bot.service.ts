@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, isValidObjectId } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
 import { User } from '../users/users.schema';
 import { MailService } from '../mail/mail.service';
@@ -90,30 +90,40 @@ export class BotService {
     const cleanLink = rawLink.replace(/\/$/, '');
     const linkVariants = Array.from(new Set([rawLink, cleanLink, cleanLink + '/']));
 
-    // Check if ANY meeting with this meetingLink already has an active bot or valid recallBotId
+    // Check if an ACTIVE bot is currently live/ongoing on another meeting using this link
+    const now = new Date();
     const activeMeeting = await this.meetingModel.findOne({
       meetingLink: { $in: linkVariants },
-      $or: [
-        { recallBotId: { $exists: true, $nin: [null, ''] } },
-        { botStatus: { $in: ['joining', 'joined', 'recording', 'bot.joining_call', 'bot.in_waiting_room', 'bot.in_call_recording', 'bot.in_call_not_recording'] } }
-      ]
+      _id: { $ne: meeting._id },
+      endTime: { $gte: now },
+      botStatus: {
+        $in: [
+          'joining',
+          'joined',
+          'recording',
+          'bot.joining_call',
+          'bot.in_waiting_room',
+          'bot.in_call_recording',
+          'bot.in_call_not_recording',
+        ],
+      },
     });
 
     if (activeMeeting) {
-      this.logger.warn(`Bot join skipped for meeting link ${cleanLink}: bot already active or recallBotId exists on meeting ${activeMeeting._id}`);
-      return { success: false, reason: 'Bot already active or joining' };
+      this.logger.warn(`Bot join skipped for meeting link ${cleanLink}: bot already active on live meeting ${activeMeeting._id}`);
+      return { success: false, reason: 'Bot already active or joining on another live meeting' };
     }
 
-    // Atomically transition status to 'joining' for ALL meetings sharing this meetingLink
-    const updateResult = await this.meetingModel.updateMany(
+    // Atomically transition status to 'joining' for target meeting ID only
+    const updateResult = await this.meetingModel.updateOne(
       {
-        meetingLink: { $in: linkVariants },
+        _id: meeting._id,
         $and: [
           { $or: [{ recallBotId: { $exists: false } }, { recallBotId: null }, { recallBotId: '' }] },
-          { $or: [{ botStatus: { $exists: false } }, { botStatus: { $in: ['none', 'error', null, ''] } }] }
-        ]
+          { $or: [{ botStatus: { $exists: false } }, { botStatus: { $in: ['none', 'error', null, ''] } }] },
+        ],
       },
-      { $set: { botStatus: 'joining' } }
+      { $set: { botStatus: 'joining' } },
     );
 
     if (!updateResult.matchedCount || updateResult.modifiedCount === 0) {
@@ -157,9 +167,9 @@ export class BotService {
       const botId = response.data.id;
       this.logger.log(`Successfully requested bot for meeting link ${cleanLink}. Bot ID: ${botId}`);
 
-      // Update all meeting records sharing this link with recallBotId
-      await this.meetingModel.updateMany(
-        { meetingLink: { $in: linkVariants } },
+      // Update specific target meeting record with recallBotId
+      await this.meetingModel.updateOne(
+        { _id: meeting._id },
         { $set: { recallBotId: botId, botStatus: 'joining' } },
         { runValidators: false }
       );
@@ -167,8 +177,8 @@ export class BotService {
       return { success: true, botId };
     } catch (error: any) {
       this.logger.error(`Failed to trigger bot for meeting link ${cleanLink}`, error.response?.data || error.message);
-      await this.meetingModel.updateMany(
-        { meetingLink: { $in: linkVariants }, botStatus: 'joining' },
+      await this.meetingModel.updateOne(
+        { _id: meeting._id, botStatus: 'joining' },
         { $set: { botStatus: 'error' } },
         { runValidators: false }
       );
@@ -279,16 +289,36 @@ export class BotService {
       );
       const pdfBuffer = Buffer.from(pdfRes.data);
 
-      // 5. Send Email
-      let emailAddress = 'admin@omnisuiteai.com'; // fallback
+      // 5. Send Email - Try organizerEmail, createdBy user, hostId user, or fallback to admin
+      let emailAddress = meeting.organizerEmail || '';
 
-      if (meeting.createdBy && meeting.createdBy !== 'manual-summon') {
-        const user = await this.userModel.findById(meeting.createdBy);
-        if (user && user.email) {
-          emailAddress = user.email;
+      if (!emailAddress && meeting.createdBy && meeting.createdBy !== 'manual-summon') {
+        if (isValidObjectId(meeting.createdBy)) {
+          const user = await this.userModel.findById(meeting.createdBy);
+          if (user && user.email) {
+            emailAddress = user.email;
+          }
+        } else if (typeof meeting.createdBy === 'string' && meeting.createdBy.includes('@')) {
+          emailAddress = meeting.createdBy;
         }
       }
 
+      if (!emailAddress && meeting.hostId) {
+        if (isValidObjectId(meeting.hostId)) {
+          const host = await this.userModel.findById(meeting.hostId);
+          if (host && host.email) {
+            emailAddress = host.email;
+          }
+        } else if (typeof meeting.hostId === 'string' && meeting.hostId.includes('@')) {
+          emailAddress = meeting.hostId;
+        }
+      }
+
+      if (!emailAddress) {
+        emailAddress = 'admin@omnisuiteai.com'; // fallback
+      }
+
+      this.logger.log(`Sending meeting report for ${meeting.title} (${meeting._id}) to: ${emailAddress}`);
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript and sent report to ${emailAddress} for meeting ${meeting._id}`);
 
