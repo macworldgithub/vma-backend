@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
 import { User } from '../users/users.schema';
+import { CalendarToken } from '../calendar/schemas/calendar-token.schema';
 import { MailService } from '../mail/mail.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
@@ -17,6 +18,7 @@ export class BotService {
   constructor(
     @InjectModel(Meeting.name) private meetingModel: Model<Meeting>,
     @InjectModel(User.name) private userModel: Model<User>,
+    @InjectModel(CalendarToken.name) private tokenModel: Model<CalendarToken>,
     private httpService: HttpService,
     private configService: ConfigService,
     private mailService: MailService,
@@ -186,6 +188,15 @@ export class BotService {
     }
   }
 
+  private isValidRecipientEmail(email?: string): boolean {
+    if (!email || typeof email !== 'string') return false;
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed.includes('@')) return false;
+    // Reject Microsoft Graph synthetic email address alias format (e.g. outlook_719D012E381A18BE@outlook.com)
+    if (trimmed.startsWith('outlook_') && trimmed.endsWith('@outlook.com')) return false;
+    return true;
+  }
+
   private async fetchTranscriptFromRecall(transcriptId?: string): Promise<string> {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
@@ -289,33 +300,90 @@ export class BotService {
       );
       const pdfBuffer = Buffer.from(pdfRes.data);
 
-      // 5. Send Email - Try organizerEmail, createdBy user, hostId user, or fallback to admin
-      let emailAddress = meeting.organizerEmail || '';
+      // 5. Determine Recipient Email Address
+      // Resolution order:
+      // Priority 1: Connected Calendar Token email (microsoftEmail / googleEmail) for createdBy / hostId
+      // Priority 2: Account email stored on Meeting schema (microsoftAccount / googleAccount)
+      // Priority 3: VMA User profile email (User.email)
+      // Priority 4: Real meeting.organizerEmail (excluding synthetic outlook_*@outlook.com addresses)
+      // Priority 5: Fallback to admin
 
-      if (!emailAddress && meeting.createdBy && meeting.createdBy !== 'manual-summon') {
-        if (isValidObjectId(meeting.createdBy)) {
-          const user = await this.userModel.findById(meeting.createdBy);
-          if (user && user.email) {
+      let emailAddress = '';
+      const userIds = [meeting.createdBy, meeting.hostId].filter(
+        (id) => id && isValidObjectId(id),
+      );
+
+      // Check CalendarToken for linked user(s)
+      if (userIds.length > 0) {
+        const tokens = await this.tokenModel.find({ userId: { $in: userIds } });
+
+        // Match meeting provider first if applicable
+        if (meeting.provider === 'microsoft') {
+          const msToken = tokens.find(
+            (t) => t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail),
+          );
+          if (msToken?.microsoftEmail) {
+            emailAddress = msToken.microsoftEmail;
+          }
+        } else if (meeting.provider === 'google') {
+          const gToken = tokens.find(
+            (t) => t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail),
+          );
+          if (gToken?.googleEmail) {
+            emailAddress = gToken.googleEmail;
+          }
+        }
+
+        // Check any valid connected token for the user
+        if (!emailAddress) {
+          for (const t of tokens) {
+            if (t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail)) {
+              emailAddress = t.microsoftEmail!;
+              break;
+            }
+            if (t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail)) {
+              emailAddress = t.googleEmail!;
+              break;
+            }
+          }
+        }
+      }
+
+      // Check stored meeting properties
+      if (!emailAddress && this.isValidRecipientEmail(meeting.microsoftAccount)) {
+        emailAddress = meeting.microsoftAccount!;
+      }
+      if (!emailAddress && this.isValidRecipientEmail(meeting.googleAccount)) {
+        emailAddress = meeting.googleAccount!;
+      }
+
+      // Check VMA User database email
+      if (!emailAddress && userIds.length > 0) {
+        for (const uid of userIds) {
+          const user = await this.userModel.findById(uid);
+          if (user && this.isValidRecipientEmail(user.email)) {
             emailAddress = user.email;
+            break;
           }
-        } else if (typeof meeting.createdBy === 'string' && meeting.createdBy.includes('@')) {
-          emailAddress = meeting.createdBy;
         }
       }
 
-      if (!emailAddress && meeting.hostId) {
-        if (isValidObjectId(meeting.hostId)) {
-          const host = await this.userModel.findById(meeting.hostId);
-          if (host && host.email) {
-            emailAddress = host.email;
-          }
-        } else if (typeof meeting.hostId === 'string' && meeting.hostId.includes('@')) {
-          emailAddress = meeting.hostId;
-        }
+      // Check string createdBy/hostId if they are direct emails
+      if (!emailAddress && typeof meeting.createdBy === 'string' && this.isValidRecipientEmail(meeting.createdBy)) {
+        emailAddress = meeting.createdBy;
+      }
+      if (!emailAddress && typeof meeting.hostId === 'string' && this.isValidRecipientEmail(meeting.hostId)) {
+        emailAddress = meeting.hostId;
       }
 
+      // Check organizerEmail (only if valid and non-synthetic)
+      if (!emailAddress && this.isValidRecipientEmail(meeting.organizerEmail)) {
+        emailAddress = meeting.organizerEmail!;
+      }
+
+      // Fallback
       if (!emailAddress) {
-        emailAddress = 'admin@omnisuiteai.com'; // fallback
+        emailAddress = 'admin@omnisuiteai.com';
       }
 
       this.logger.log(`Sending meeting report for ${meeting.title} (${meeting._id}) to: ${emailAddress}`);

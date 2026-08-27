@@ -19,6 +19,8 @@ export class GoogleCalendarProvider {
     return this.oauthClient.generateAuthUrl({
       access_type: 'offline',
       scope: [
+        'openid',
+        'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/calendar.readonly',
         'https://www.googleapis.com/auth/calendar.events.readonly'
       ],
@@ -27,10 +29,29 @@ export class GoogleCalendarProvider {
     });
   }
 
-  //  EXCHANGE CODE FOR TOKENS
+  // 🔑 EXCHANGE CODE FOR TOKENS
   async exchangeCodeForTokens(code: string) {
     const { tokens } = await this.oauthClient.getToken(code);
-    return tokens;
+    this.oauthClient.setCredentials(tokens);
+
+    let googleEmail: string | undefined = undefined;
+    try {
+      const oauth2 = google.oauth2({ version: 'v2', auth: this.oauthClient });
+      const userInfo = await oauth2.userinfo.get();
+      googleEmail = userInfo.data.email || undefined;
+    } catch (_) {
+      if (tokens.id_token) {
+        try {
+          const parts = tokens.id_token.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
+            googleEmail = payload.email || undefined;
+          }
+        } catch (e) {}
+      }
+    }
+
+    return { ...tokens, googleEmail };
   }
 
   //  FETCH EVENTS

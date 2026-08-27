@@ -76,6 +76,7 @@ export class CalendarService implements OnModuleInit {
           expiryDate: tokens.expiry_date
             ? new Date(tokens.expiry_date)
             : new Date(Date.now() + 3600 * 1000),
+          googleEmail: tokens.googleEmail,
         },
         { upsert: true, new: true },
       );
@@ -188,7 +189,7 @@ export class CalendarService implements OnModuleInit {
           }
 
           const events = await this.googleProvider.fetchEvents(currentAccessToken);
-          const ingestResult = await this.ingestionService.ingestGoogleEvents(userId, events);
+          const ingestResult = await this.ingestionService.ingestGoogleEvents(userId, events, token.googleEmail);
           results.push({ provider: 'google', status: 'success', ...ingestResult });
         } catch (error: any) {
           console.error('Failed to sync Google calendar:', error);
@@ -267,7 +268,7 @@ export class CalendarService implements OnModuleInit {
           }
 
           const events = await this.microsoftProvider.fetchEvents(currentAccessToken);
-          const ingestResult = await this.ingestionService.ingestMicrosoftEvents(userId, events);
+          const ingestResult = await this.ingestionService.ingestMicrosoftEvents(userId, events, token.microsoftEmail);
           results.push({
             provider: 'microsoft',
             status: 'success',

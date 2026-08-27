@@ -12,7 +12,7 @@ export class CalendarIngestionService {
     private meetingModel: Model<Meeting>,
   ) {}
 
-  async ingestGoogleEvents(userId: string, events: any[]) {
+  async ingestGoogleEvents(userId: string, events: any[], googleAccount?: string) {
     if (!events || events.length === 0) {
       return { ingested: 0, meetings: [] };
     }
@@ -38,6 +38,8 @@ export class CalendarIngestionService {
         endTime: event.end?.dateTime || event.end?.date,
         createdBy: userId,
         hostId: userId,
+        organizerEmail: event.organizer?.email || event.creator?.email,
+        googleAccount: googleAccount || undefined,
         participants: event.attendees?.map((a) => a.email) || [],
         externalEventId: event.id,
         source: 'calendar',
@@ -79,7 +81,7 @@ export class CalendarIngestionService {
     return { ingested: bulkOps.length };
   }
 
-  async ingestMicrosoftEvents(userId: string, events: any[]) {
+  async ingestMicrosoftEvents(userId: string, events: any[], microsoftAccount?: string) {
     if (!events || events.length === 0) {
       return { ingested: 0, meetings: [] };
     }
@@ -118,6 +120,7 @@ export class CalendarIngestionService {
         hostId: userId,
         organizerEmail: event.organizer?.emailAddress?.address,
         organizerName: event.organizer?.emailAddress?.name,
+        microsoftAccount: microsoftAccount || undefined,
         participants:
           event.attendees?.map((a: any) => a.emailAddress?.address).filter(Boolean) || [],
         externalEventId: event.id,

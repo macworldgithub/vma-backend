@@ -97,6 +97,9 @@ export class Meeting {
   microsoftAccount?: string;
 
   @Prop()
+  googleAccount?: string;
+
+  @Prop()
   botJoinedAt?: Date;
 
   @Prop()

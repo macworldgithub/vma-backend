@@ -24,6 +24,10 @@ export class CalendarToken {
   /** The Object ID (oid) of the Microsoft account that actually authenticated */
   @Prop({ required: false })
   microsoftUserId?: string;
+
+  /** The email of the Google account that actually authenticated */
+  @Prop({ required: false })
+  googleEmail?: string;
 }
 
 export const CalendarTokenSchema = SchemaFactory.createForClass(CalendarToken);
