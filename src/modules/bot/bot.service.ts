@@ -156,7 +156,10 @@ export class BotService {
             automatic_leave: {
               everyone_left_timeout: {
                 timeout: timeoutSeconds
-              }
+              },
+              noone_joined_timeout: Math.min(1800, timeoutSeconds),
+              waiting_room_timeout: Math.min(1800, timeoutSeconds),
+              in_call_not_recording_timeout: Math.min(1800, timeoutSeconds)
             },
             recording_config: {
               transcript: {
