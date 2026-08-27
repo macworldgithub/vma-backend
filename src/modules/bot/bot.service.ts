@@ -133,6 +133,18 @@ export class BotService {
       return { success: false, reason: 'Bot already active or joining' };
     }
 
+    // Calculate timeout in seconds equal to scheduled meeting duration (default to 3600s/1 hour if unspecified)
+    let timeoutSeconds = 3600;
+    if (meeting.startTime && meeting.endTime) {
+      const startMs = new Date(meeting.startTime).getTime();
+      const endMs = new Date(meeting.endTime).getTime();
+      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
+        const durationSec = Math.floor((endMs - startMs) / 1000);
+        // Ensure timeout is at least 600 seconds (10 mins) and at most 14400 seconds (4 hours)
+        timeoutSeconds = Math.max(600, Math.min(14400, durationSec));
+      }
+    }
+
     try {
       const response = await firstValueFrom(
         this.httpService.post(
@@ -143,7 +155,7 @@ export class BotService {
             metadata: { meetingId: meeting._id.toString() },
             automatic_leave: {
               everyone_left_timeout: {
-                timeout: 300 // 5 minutes (reduced from 7200/2 hours to send reports faster)
+                timeout: timeoutSeconds
               }
             },
             recording_config: {
