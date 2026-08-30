@@ -140,10 +140,23 @@ export class BotService {
       const endMs = new Date(meeting.endTime).getTime();
       if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
         const durationSec = Math.floor((endMs - startMs) / 1000);
-        // Ensure timeout is at least 600 seconds (10 mins) and at most 14400 seconds (4 hours)
         timeoutSeconds = Math.max(600, Math.min(14400, durationSec));
       }
     }
+
+    // The bot can be dispatched up to ~10 min before scheduled start (see
+    // checkUpcomingMeetings), so a lobby timeout based only on meeting duration
+    // can expire before the scheduled end if the host is slow to admit it.
+    // Base it on time remaining until the scheduled end instead, plus a buffer.
+    let lobbyTimeoutSeconds = Math.min(1800, timeoutSeconds);
+    if (meeting.endTime) {
+      const endMs = new Date(meeting.endTime).getTime();
+      const secondsUntilEnd = Math.floor((endMs - Date.now()) / 1000);
+      if (!isNaN(secondsUntilEnd) && secondsUntilEnd > 0) {
+        lobbyTimeoutSeconds = Math.max(lobbyTimeoutSeconds, secondsUntilEnd + 300); // +5 min buffer
+      }
+    }
+    lobbyTimeoutSeconds = Math.min(lobbyTimeoutSeconds, 14400); // 4hr hard cap
 
     try {
       const response = await firstValueFrom(
@@ -154,11 +167,9 @@ export class BotService {
             bot_name: botName,
             metadata: { meetingId: meeting._id.toString() },
             automatic_leave: {
-              everyone_left_timeout: {
-                timeout: timeoutSeconds
-              },
-              noone_joined_timeout: Math.min(1800, timeoutSeconds),
-              waiting_room_timeout: Math.min(1800, timeoutSeconds),
+              everyone_left_timeout: { timeout: timeoutSeconds },
+              noone_joined_timeout: lobbyTimeoutSeconds,
+              waiting_room_timeout: lobbyTimeoutSeconds,
               in_call_not_recording_timeout: Math.min(1800, timeoutSeconds)
             },
             recording_config: {
