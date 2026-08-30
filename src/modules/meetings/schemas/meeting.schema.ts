@@ -113,6 +113,12 @@ export class Meeting {
 
   @Prop()
   transcriptId?: string;
+
+  @Prop({ type: [String], default: [] })
+  previousBotIds!: string[];
+
+  @Prop({ type: Number, default: 0 })
+  redeployCount!: number;
 }
 
 export const MeetingSchema = SchemaFactory.createForClass(Meeting);

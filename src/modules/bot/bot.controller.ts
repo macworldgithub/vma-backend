@@ -44,7 +44,10 @@ export class BotController {
     const botId = data.bot_id || (data.bot && data.bot.id);
     if (!botId) return { received: true };
 
-    const meeting = await this.meetingModel.findOne({ recallBotId: botId });
+    // top of handleRecallWebhook — was: findOne({ recallBotId: botId })
+    const meeting = await this.meetingModel.findOne({
+      $or: [{ recallBotId: botId }, { previousBotIds: botId }],
+    });
 
     if (!meeting) {
       this.logger.warn(`Could not find meeting for Bot ID: ${botId}`);
@@ -65,12 +68,30 @@ export class BotController {
         break;
 
       case 'bot.call_ended':
-        this.logger.log(`Meeting ended for Bot ${botId}`);
-        await this.meetingModel.updateMany(
-          { recallBotId: botId },
-          { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: new Date() } },
-          { runValidators: false }
-        );
+        const now = new Date();
+        const stillWithinSchedule = meeting.endTime && now < new Date(meeting.endTime);
+
+        if (stillWithinSchedule) {
+          this.logger.log(
+            `Meeting ${meeting._id} call ended before scheduled endTime — releasing bot lock so it can redeploy if the host rejoins.`
+          );
+          await this.meetingModel.updateOne(
+            { _id: meeting._id, recallBotId: botId },
+            {
+              $set: { botStatus: 'none', recallBotId: null, botLeftAt: now },
+              $addToSet: { previousBotIds: botId },
+              $inc: { redeployCount: 1 },
+            },
+            { runValidators: false },
+          );
+        } else {
+          this.logger.log(`Meeting ended for Bot ${botId}`);
+          await this.meetingModel.updateMany(
+            { recallBotId: botId },
+            { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: now } },
+            { runValidators: false },
+          );
+        }
         break;
 
       case 'bot.done':
@@ -83,16 +104,18 @@ export class BotController {
         break;
 
       case 'transcript.done':
-        {
-          const transcriptId = data.transcript?.id;
-          this.logger.log(`Transcript ${transcriptId} ready for Bot ${botId}, processing...`);
-          if (transcriptId) {
-            await this.meetingModel.updateMany({ recallBotId: botId }, { $set: { transcriptId } }, { runValidators: false });
-          }
-          this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
-            this.logger.error(`Error processing transcript: ${err.message}`);
-          });
+        const transcriptId = data.transcript?.id;
+        if (transcriptId) {
+          // was: updateMany({ recallBotId: botId }, ...) — now target by meeting._id
+          await this.meetingModel.updateOne(
+            { _id: meeting._id },
+            { $set: { transcriptId } },
+            { runValidators: false },
+          );
         }
+        this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
+          this.logger.error(`Error processing transcript: ${err.message}`);
+        });
         break;
 
       case 'transcript.failed':

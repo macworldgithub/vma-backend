@@ -312,6 +312,8 @@ export class BotService {
 
       const summaryData = analysisRes.data;
       // 3. Update Meeting with Summary Data
+      // Safe as a broad match — this only attaches report data, it doesn't
+      // touch botStatus/recallBotId, so it can't affect a redeployed bot's lock.
       await this.meetingModel.updateMany(
         { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
         { $set: { summaryData: { ...summaryData, transcript: transcriptText } } },
@@ -416,23 +418,41 @@ export class BotService {
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript and sent report to ${emailAddress} for meeting ${meeting._id}`);
 
-      // Clear recallBotId and set botStatus to 'none', while logging summary delivery details
-      await this.meetingModel.updateMany(
-        { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
+      // 1) Always record that this email was sent, regardless of whether this
+      //    bot is still the "active" one for the meeting. Use $addToSet instead
+      //    of overwriting the array, so a later redeployed session's send
+      //    doesn't erase the record of an earlier session's send.
+      await this.meetingModel.updateOne(
+        { _id: meeting._id },
         {
+          $addToSet: { summarySentTo: emailAddress },
           $set: {
-            botStatus: 'none',
-            recallBotId: null,
-            summarySentTo: [emailAddress],
             summarySentAt: new Date(),
             summaryStatus: 'sent',
             summaryError: null,
-          }
+          },
         },
-        { runValidators: false }
+        { runValidators: false },
       );
+
+      // 2) Separately, release this bot's lock — but ONLY if it's still the
+      //    active bot for this meeting. If a redeploy already happened, this
+      //    is a correct, expected no-op (logged so it's visible, not silent).
+      const lockRelease = await this.meetingModel.updateOne(
+        { _id: meeting._id, recallBotId: botId },
+        { $set: { botStatus: 'none', recallBotId: null } },
+        { runValidators: false },
+      );
+      if (lockRelease.matchedCount === 0) {
+        this.logger.log(
+          `Skipped lock release for bot ${botId} on meeting ${meeting._id} — a newer bot is already active.`,
+        );
+      }
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
+      // Left as a broad match intentionally — summaryStatus/summaryError are
+      // informational only and don't gate the redeploy cron, so this can't
+      // clobber a redeployed bot's lock the way botStatus/recallBotId could.
       await this.meetingModel.updateMany(
         { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
         {
