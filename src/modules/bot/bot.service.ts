@@ -32,6 +32,40 @@ export class BotService {
     const tenMinutesFromNow = new Date(now.getTime() + 10 * 60000);
     const thirtyMinutesAgo = new Date(now.getTime() - 30 * 60000);
 
+    // Auto-fix any meeting records contaminated by past recurring meeting webhooks
+    // (e.g. where botLeftAt is before startTime or future meetings were pre-marked as ENDED/done)
+    try {
+      await this.meetingModel.updateMany(
+        {
+          $or: [
+            // Case 1: Bot left before the meeting even started (signature of recurring contamination)
+            {
+              botLeftAt: { $exists: true, $ne: null },
+              $expr: { $lt: ['$botLeftAt', '$startTime'] },
+            },
+            // Case 2: Future meeting (startTime in future) incorrectly marked as ENDED/done
+            {
+              startTime: { $gt: now },
+              $or: [
+                { botStatus: { $in: ['bot.done', 'call_ended', 'done'] } },
+                { status: 'ENDED' },
+              ],
+            },
+          ],
+        },
+        {
+          $set: {
+            botStatus: 'none',
+            status: 'SCHEDULED',
+            recallBotId: null,
+          },
+          $unset: { botLeftAt: 1, botJoinedAt: 1 },
+        },
+      );
+    } catch (err: any) {
+      this.logger.error('Error auto-sanitizing contaminated recurring meetings:', err.message);
+    }
+
     const upcomingMeetings = await this.meetingModel.find({
       meetingLink: { $exists: true, $ne: '' },
       $and: [
@@ -223,6 +257,88 @@ export class BotService {
     return true;
   }
 
+  private async resolveRecipientEmail(meeting: any): Promise<string> {
+    let emailAddress = '';
+    const userIds = [meeting.createdBy, meeting.hostId].filter(
+      (id) => id && isValidObjectId(id),
+    );
+
+    // Check CalendarToken for linked user(s)
+    if (userIds.length > 0) {
+      const tokens = await this.tokenModel.find({ userId: { $in: userIds } });
+
+      // Match meeting provider first if applicable
+      if (meeting.provider === 'microsoft') {
+        const msToken = tokens.find(
+          (t) => t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail),
+        );
+        if (msToken?.microsoftEmail) {
+          emailAddress = msToken.microsoftEmail;
+        }
+      } else if (meeting.provider === 'google') {
+        const gToken = tokens.find(
+          (t) => t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail),
+        );
+        if (gToken?.googleEmail) {
+          emailAddress = gToken.googleEmail;
+        }
+      }
+
+      // Check any valid connected token for the user
+      if (!emailAddress) {
+        for (const t of tokens) {
+          if (t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail)) {
+            emailAddress = t.microsoftEmail!;
+            break;
+          }
+          if (t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail)) {
+            emailAddress = t.googleEmail!;
+            break;
+          }
+        }
+      }
+    }
+
+    // Check stored meeting properties
+    if (!emailAddress && this.isValidRecipientEmail(meeting.microsoftAccount)) {
+      emailAddress = meeting.microsoftAccount!;
+    }
+    if (!emailAddress && this.isValidRecipientEmail(meeting.googleAccount)) {
+      emailAddress = meeting.googleAccount!;
+    }
+
+    // Check VMA User database email
+    if (!emailAddress && userIds.length > 0) {
+      for (const uid of userIds) {
+        const user = await this.userModel.findById(uid);
+        if (user && this.isValidRecipientEmail(user.email)) {
+          emailAddress = user.email;
+          break;
+        }
+      }
+    }
+
+    // Check string createdBy/hostId if they are direct emails
+    if (!emailAddress && typeof meeting.createdBy === 'string' && this.isValidRecipientEmail(meeting.createdBy)) {
+      emailAddress = meeting.createdBy;
+    }
+    if (!emailAddress && typeof meeting.hostId === 'string' && this.isValidRecipientEmail(meeting.hostId)) {
+      emailAddress = meeting.hostId;
+    }
+
+    // Check organizerEmail (only if valid and non-synthetic)
+    if (!emailAddress && this.isValidRecipientEmail(meeting.organizerEmail)) {
+      emailAddress = meeting.organizerEmail!;
+    }
+
+    // Fallback
+    if (!emailAddress) {
+      emailAddress = 'admin@omnisuiteai.com';
+    }
+
+    return emailAddress;
+  }
+
   private async fetchTranscriptFromRecall(transcriptId?: string): Promise<string> {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
@@ -291,12 +407,46 @@ export class BotService {
         transcriptText = await this.fetchTranscriptFromRecall(transcriptId ?? meeting.transcriptId);
       } catch (err: any) {
         this.logger.warn(`Could not fetch transcript for bot ${botId}: ${err.message}`);
-        transcriptText = 'Transcript could not be retrieved from Recall.ai API.';
+        transcriptText = '';
       }
 
-      if (!transcriptText || transcriptText.trim().length === 0) {
-        this.logger.warn(`Transcript is empty for meeting ${meeting._id}`);
-        transcriptText = "(Empty transcript)";
+      const cleanTranscript = (transcriptText || '')
+        .replace(/Transcript could not be retrieved.*/gi, '')
+        .replace(/\(Empty transcript\)/gi, '')
+        .trim();
+
+      if (!cleanTranscript || cleanTranscript.length < 20) {
+        const reason =
+          'No transcript recorded (bot was not admitted to call or meeting had no spoken words).';
+        this.logger.warn(
+          `Skipping summary generation and email report for meeting ${meeting._id}: ${reason}`,
+        );
+        await this.meetingModel.updateOne(
+          { _id: meeting._id },
+          {
+            $set: {
+              summaryStatus: 'skipped_empty_transcript',
+              summaryError: reason,
+            },
+          },
+          { runValidators: false },
+        );
+
+        // Send informational email notification to host explaining why report was skipped
+        try {
+          const recipientEmail = await this.resolveRecipientEmail(meeting);
+          if (recipientEmail && recipientEmail !== 'admin@omnisuiteai.com') {
+            await this.mailService.sendReportSkippedNotification(
+              recipientEmail,
+              meeting.title,
+              'The virtual assistant was kept in the waiting room or no spoken dialogue was recorded during the call.',
+            );
+          }
+        } catch (emailErr: any) {
+          this.logger.warn(`Could not send report skipped email notification: ${emailErr.message}`);
+        }
+
+        return;
       }
 
       this.logger.log(`Calling microservice for analysis and PDF generation...`);
@@ -329,90 +479,7 @@ export class BotService {
       const pdfBuffer = Buffer.from(pdfRes.data);
 
       // 5. Determine Recipient Email Address
-      // Resolution order:
-      // Priority 1: Connected Calendar Token email (microsoftEmail / googleEmail) for createdBy / hostId
-      // Priority 2: Account email stored on Meeting schema (microsoftAccount / googleAccount)
-      // Priority 3: VMA User profile email (User.email)
-      // Priority 4: Real meeting.organizerEmail (excluding synthetic outlook_*@outlook.com addresses)
-      // Priority 5: Fallback to admin
-
-      let emailAddress = '';
-      const userIds = [meeting.createdBy, meeting.hostId].filter(
-        (id) => id && isValidObjectId(id),
-      );
-
-      // Check CalendarToken for linked user(s)
-      if (userIds.length > 0) {
-        const tokens = await this.tokenModel.find({ userId: { $in: userIds } });
-
-        // Match meeting provider first if applicable
-        if (meeting.provider === 'microsoft') {
-          const msToken = tokens.find(
-            (t) => t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail),
-          );
-          if (msToken?.microsoftEmail) {
-            emailAddress = msToken.microsoftEmail;
-          }
-        } else if (meeting.provider === 'google') {
-          const gToken = tokens.find(
-            (t) => t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail),
-          );
-          if (gToken?.googleEmail) {
-            emailAddress = gToken.googleEmail;
-          }
-        }
-
-        // Check any valid connected token for the user
-        if (!emailAddress) {
-          for (const t of tokens) {
-            if (t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail)) {
-              emailAddress = t.microsoftEmail!;
-              break;
-            }
-            if (t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail)) {
-              emailAddress = t.googleEmail!;
-              break;
-            }
-          }
-        }
-      }
-
-      // Check stored meeting properties
-      if (!emailAddress && this.isValidRecipientEmail(meeting.microsoftAccount)) {
-        emailAddress = meeting.microsoftAccount!;
-      }
-      if (!emailAddress && this.isValidRecipientEmail(meeting.googleAccount)) {
-        emailAddress = meeting.googleAccount!;
-      }
-
-      // Check VMA User database email
-      if (!emailAddress && userIds.length > 0) {
-        for (const uid of userIds) {
-          const user = await this.userModel.findById(uid);
-          if (user && this.isValidRecipientEmail(user.email)) {
-            emailAddress = user.email;
-            break;
-          }
-        }
-      }
-
-      // Check string createdBy/hostId if they are direct emails
-      if (!emailAddress && typeof meeting.createdBy === 'string' && this.isValidRecipientEmail(meeting.createdBy)) {
-        emailAddress = meeting.createdBy;
-      }
-      if (!emailAddress && typeof meeting.hostId === 'string' && this.isValidRecipientEmail(meeting.hostId)) {
-        emailAddress = meeting.hostId;
-      }
-
-      // Check organizerEmail (only if valid and non-synthetic)
-      if (!emailAddress && this.isValidRecipientEmail(meeting.organizerEmail)) {
-        emailAddress = meeting.organizerEmail!;
-      }
-
-      // Fallback
-      if (!emailAddress) {
-        emailAddress = 'admin@omnisuiteai.com';
-      }
+      const emailAddress = await this.resolveRecipientEmail(meeting);
 
       this.logger.log(`Sending meeting report for ${meeting.title} (${meeting._id}) to: ${emailAddress}`);
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);

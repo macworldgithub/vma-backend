@@ -60,8 +60,8 @@ export class BotController {
       case 'bot.in_call_recording':
       case 'bot.in_call_not_recording':
         this.logger.log(`Bot ${botId} status changed to ${payload.event}`);
-        await this.meetingModel.updateMany(
-          { recallBotId: botId },
+        await this.meetingModel.updateOne(
+          { _id: meeting._id },
           { $set: { botStatus: payload.event }, $setOnInsert: { botJoinedAt: new Date() } },
           { runValidators: false }
         );
@@ -86,8 +86,8 @@ export class BotController {
           );
         } else {
           this.logger.log(`Meeting ended for Bot ${botId}`);
-          await this.meetingModel.updateMany(
-            { recallBotId: botId },
+          await this.meetingModel.updateOne(
+            { _id: meeting._id },
             { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: now } },
             { runValidators: false },
           );
@@ -96,8 +96,8 @@ export class BotController {
 
       case 'bot.done':
         this.logger.log(`Bot ${botId} done. Awaiting transcript.done before processing.`);
-        await this.meetingModel.updateMany(
-          { recallBotId: botId },
+        await this.meetingModel.updateOne(
+          { _id: meeting._id },
           { $set: { botStatus: 'bot.done', botLeftAt: new Date() } },
           { runValidators: false }
         );
@@ -106,7 +106,7 @@ export class BotController {
       case 'transcript.done':
         const transcriptId = data.transcript?.id;
         if (transcriptId) {
-          // was: updateMany({ recallBotId: botId }, ...) — now target by meeting._id
+          // target by meeting._id
           await this.meetingModel.updateOne(
             { _id: meeting._id },
             { $set: { transcriptId } },
@@ -122,14 +122,17 @@ export class BotController {
         {
           const transcriptId = data.transcript?.id;
           this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
-          await this.meetingModel.updateMany(
-            { recallBotId: botId },
-            { $set: { botErrorLog: JSON.stringify(data.data || {}) } },
+          await this.meetingModel.updateOne(
+            { _id: meeting._id },
+            {
+              $set: {
+                botErrorLog: JSON.stringify(data.data || {}),
+                summaryStatus: 'failed',
+                summaryError: 'Transcript generation failed on Recall.ai',
+              },
+            },
             { runValidators: false }
           );
-          this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
-            this.logger.error(`Error processing transcript after failure: ${err.message}`);
-          });
         }
         break;
 
