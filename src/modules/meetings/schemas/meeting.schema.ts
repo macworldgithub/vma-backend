@@ -87,6 +87,9 @@ export class Meeting {
   @Prop()
   summaryError?: string;
 
+  @Prop({ default: 0 })
+  summaryRetryCount?: number;
+
   @Prop()
   organizerEmail?: string;
 

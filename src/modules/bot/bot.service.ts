@@ -107,6 +107,55 @@ export class BotService {
     }
   }
 
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async retryPendingOrFailedReports() {
+    this.logger.debug('Checking for pending or failed meeting reports to auto-retry...');
+    try {
+      const candidates = await this.meetingModel.find({
+        $and: [
+          {
+            $or: [
+              { summaryStatus: { $in: ['failed', 'none', 'pending'] } },
+              { summaryStatus: { $exists: false } },
+            ],
+          },
+          {
+            $or: [
+              { transcriptId: { $exists: true, $nin: [null, ''] } },
+              { recallBotId: { $exists: true, $nin: [null, ''] } },
+            ],
+          },
+          {
+            $or: [
+              { summaryRetryCount: { $exists: false } },
+              { summaryRetryCount: { $lt: 5 } },
+            ],
+          },
+        ],
+      });
+
+      if (!candidates || candidates.length === 0) return;
+
+      for (const meeting of candidates) {
+        // Only retry if meeting ended or bot status is bot.done / call_ended
+        const isEnded =
+          meeting.status === 'ENDED' ||
+          ['bot.done', 'call_ended', 'done'].includes(meeting.botStatus || '');
+
+        if (!isEnded) continue;
+
+        const effectiveBotId = meeting.recallBotId || (meeting as any).previousBotIds?.[0] || 'legacy';
+        this.logger.log(
+          `Auto-retrying report processing for meeting: ${meeting.title} (${meeting._id}), attempt #${(meeting.summaryRetryCount || 0) + 1}`,
+        );
+
+        await this.processTranscript(effectiveBotId, meeting, meeting.transcriptId);
+      }
+    } catch (err: any) {
+      this.logger.error('Error during auto-retry of meeting reports:', err?.message || err);
+    }
+  }
+
   async joinMeeting(meeting: any) {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
@@ -526,7 +575,8 @@ export class BotService {
           $set: {
             summaryStatus: 'failed',
             summaryError: error.message,
-          }
+          },
+          $inc: { summaryRetryCount: 1 },
         },
         { runValidators: false }
       );
