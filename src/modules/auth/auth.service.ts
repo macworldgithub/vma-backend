@@ -35,7 +35,7 @@ export class AuthService {
       email: dto.email,
       password: hash,
       name: dto.name,
-      role: dto.role || UserRole.STAFF,
+      role: UserRole.STAFF,
     });
 
     return { message: 'User registered successfully' };

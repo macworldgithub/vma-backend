@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, UseGuards, Req, Get, Param, Res } from '@nestjs/common';
+import { Controller, Post, Body, Logger, UseGuards, Req, Get, Param, Res, Delete, ForbiddenException } from '@nestjs/common';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { BotService } from './bot.service';
 import { SummonBotDto } from './dto/summon-bot.dto';
@@ -134,5 +134,21 @@ export class BotActionController {
       this.logger.error(`Failed to download report for meeting ${id}:`, error);
       res.status(500).send('Failed to generate report');
     }
+  }
+
+  @Delete('meeting/:id')
+  async removeBot(@Param('id') id: string, @Req() req: any) {
+    const meeting = await this.meetingModel.findById(id).select('createdBy hostId');
+    if (!meeting) {
+      return this.botService.removeBot(id);
+    }
+
+    const userId = String(req.user.sub || req.user.id || req.user._id);
+    const isOwner = [meeting.createdBy, meeting.hostId].some((ownerId) => String(ownerId) === userId);
+    if (!isOwner && req.user.role !== 'admin') {
+      throw new ForbiddenException('Only the meeting host can remove the bot');
+    }
+
+    return this.botService.removeBot(id);
   }
 }

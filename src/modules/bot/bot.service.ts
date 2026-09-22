@@ -117,6 +117,10 @@ export class BotService {
             $or: [
               { summaryStatus: { $in: ['failed', 'none', 'pending'] } },
               { summaryStatus: { $exists: false } },
+              {
+                summaryStatus: 'processing',
+                summaryProcessingStartedAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
+              },
             ],
           },
           {
@@ -297,6 +301,52 @@ export class BotService {
     }
   }
 
+  async removeBot(meetingId: string) {
+    const meeting = await this.meetingModel.findById(meetingId);
+    if (!meeting) {
+      throw new NotFoundException('Meeting not found');
+    }
+
+    const botId = meeting.recallBotId;
+    if (botId) {
+      const apiKey = this.configService.get<string>('RECALL_API_KEY');
+      const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
+
+      if (!apiKey || !baseUrl) {
+        throw new InternalServerErrorException('Recall API config missing');
+      }
+
+      try {
+        await firstValueFrom(
+          this.httpService.post(`${baseUrl}/bot/${botId}/leave_call/`, null, {
+            headers: {
+              Authorization: `Token ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          }),
+        );
+      } catch (error: any) {
+        if (error.response?.status !== 404) {
+          this.logger.error(
+            `Failed to remove bot ${botId} via leave_call: ${JSON.stringify(error.response?.data || error.message)}`,
+          );
+          throw new InternalServerErrorException('Bot could not be removed from the call');
+        }
+      }
+    }
+
+    await this.meetingModel.updateOne(
+      { _id: meeting._id },
+      {
+        $set: { botStatus: 'uninvited', recallBotId: null, botLeftAt: new Date() },
+        ...(botId ? { $addToSet: { previousBotIds: botId } } : {}),
+      },
+      { runValidators: false },
+    );
+
+    return { message: 'Bot removed from meeting', meetingId: meeting._id };
+  }
+
   private isValidRecipientEmail(email?: string): boolean {
     if (!email || typeof email !== 'string') return false;
     const trimmed = email.trim().toLowerCase();
@@ -445,6 +495,29 @@ export class BotService {
 
     if (!microserviceUrl) {
       this.logger.error('VMA_MICROSERVICE_URL is not configured.');
+      return;
+    }
+
+    // Atomic guard: claim this meeting to prevent duplicate processing
+    // by concurrent cron ticks or overlapping webhook calls.
+    const claimed = await this.meetingModel.findOneAndUpdate(
+      {
+        _id: meeting._id,
+        summaryStatus: { $nin: ['processing', 'sent', 'skipped_empty_transcript'] },
+      },
+      {
+        $set: {
+          summaryStatus: 'processing',
+          summaryProcessingStartedAt: new Date(),
+        },
+      },
+      { runValidators: false },
+    );
+
+    if (!claimed) {
+      this.logger.log(
+        `Meeting ${meeting._id} is already being processed or report already sent. Skipping.`,
+      );
       return;
     }
 

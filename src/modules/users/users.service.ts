@@ -53,6 +53,9 @@ export class UsersService {
     if (existing) {
       throw new BadRequestException('A user with this email already exists');
     }
+    if (data.role && !['admin', 'staff'].includes(data.role)) {
+      throw new BadRequestException('Invalid user role');
+    }
     const hash = await bcrypt.hash(data.password, 10);
     return this.model.create({
       name: data.name,
