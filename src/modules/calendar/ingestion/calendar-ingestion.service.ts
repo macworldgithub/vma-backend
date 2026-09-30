@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Meeting } from 'src/modules/meetings/schemas/meeting.schema';
@@ -30,6 +30,12 @@ export class CalendarIngestionService {
         event.htmlLink ||
         '';
 
+      const organizerEmail = (event.organizer?.email || event.creator?.email || '').trim();
+      const isOrganizer = Boolean(
+        event.organizer?.self ??
+        (organizerEmail && googleAccount ? organizerEmail.toLowerCase() === googleAccount.toLowerCase().trim() : true)
+      );
+
       const meetingData = {
         title: event.summary || 'Untitled Meeting',
         platform: this.detectPlatform(rawLink, 'google'),
@@ -38,7 +44,9 @@ export class CalendarIngestionService {
         endTime: event.end?.dateTime || event.end?.date,
         createdBy: userId,
         hostId: userId,
-        organizerEmail: event.organizer?.email || event.creator?.email,
+        isOrganizer,
+        organizerEmail: organizerEmail || undefined,
+        organizerName: event.organizer?.displayName || undefined,
         googleAccount: googleAccount || undefined,
         participants: event.attendees?.map((a) => a.email) || [],
         externalEventId: event.id,
@@ -110,6 +118,13 @@ export class CalendarIngestionService {
         ''
       ).replace(/&amp;/g, '&').replace(/[\r\n\t]/g, '').trim();
 
+      const organizerEmail = (event.organizer?.emailAddress?.address || '').trim();
+      const organizerName = (event.organizer?.emailAddress?.name || '').trim();
+      const isOrganizer = Boolean(
+        event.isOrganizer ??
+        (organizerEmail && microsoftAccount ? organizerEmail.toLowerCase() === microsoftAccount.toLowerCase().trim() : false)
+      );
+
       const meetingData = {
         title: event.subject || 'Untitled Meeting',
         platform: this.detectPlatform(rawLink, 'teams'),
@@ -118,8 +133,9 @@ export class CalendarIngestionService {
         endTime: parseMSDate(event.end),
         createdBy: userId,
         hostId: userId,
-        organizerEmail: event.organizer?.emailAddress?.address,
-        organizerName: event.organizer?.emailAddress?.name,
+        isOrganizer,
+        organizerEmail: organizerEmail || undefined,
+        organizerName: organizerName || undefined,
         microsoftAccount: microsoftAccount || undefined,
         participants:
           event.attendees?.map((a: any) => a.emailAddress?.address).filter(Boolean) || [],

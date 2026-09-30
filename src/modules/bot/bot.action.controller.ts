@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Logger, UseGuards, Req, Get, Param, Res, Delete, ForbiddenException } from '@nestjs/common';
+﻿import { Controller, Post, Body, Logger, UseGuards, Req, Get, Param, Res, Delete, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { JwtGuard } from '../../common/guards/jwt.guard';
 import { BotService } from './bot.service';
 import { SummonBotDto } from './dto/summon-bot.dto';
@@ -36,15 +36,18 @@ export class BotActionController {
           status: 'LIVE',
           createdBy: userId,
           hostId: userId,
+          summonedBy: userId,
           startTime: new Date(),
           endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
         });
       } else {
+        // Tag summonedBy
+        targetMeeting.summonedBy = userId;
         // Update status to LIVE if it's currently SCHEDULED
         if (targetMeeting.status === 'SCHEDULED') {
           targetMeeting.status = 'LIVE';
-          await targetMeeting.save();
         }
+        await targetMeeting.save();
       }
     } else {
       // Check if a current or upcoming meeting with this link exists
@@ -72,9 +75,13 @@ export class BotActionController {
           status: 'LIVE',
           createdBy: userId,
           hostId: userId,
+          summonedBy: userId,
           startTime: new Date(),
           endTime: new Date(Date.now() + 60 * 60 * 1000), // Default 1 hr duration
         });
+      } else {
+        targetMeeting.summonedBy = userId;
+        await targetMeeting.save();
       }
     }
 
@@ -102,7 +109,7 @@ export class BotActionController {
       targetMeeting = await this.meetingModel.findById(targetMeeting._id);
     }
 
-    // Trigger the bot and check the result — do NOT silently swallow failures
+    // Trigger the bot and check the result - do NOT silently swallow failures
     const result = await this.botService.joinMeeting(targetMeeting);
 
     if (!result?.success) {
@@ -122,16 +129,34 @@ export class BotActionController {
   }
 
   @Get('meeting/:id/report')
-  async downloadReport(@Param('id') id: string, @Res() res: any) {
+  async downloadReport(@Param('id') id: string, @Req() req: any, @Res() res: any) {
     try {
+      const meeting = await this.meetingModel.findById(id);
+      if (!meeting) {
+        throw new NotFoundException('Meeting not found');
+      }
+
+      const userId = String(req.user.sub || req.user.id || req.user._id);
+      const userEmail = (req.user.email || '').toLowerCase().trim();
+      const isOwner =
+        [meeting.createdBy, meeting.hostId].some((ownerId) => String(ownerId) === userId) ||
+        (meeting.organizerEmail && meeting.organizerEmail.toLowerCase().trim() === userEmail);
+
+      if (!isOwner && req.user.role !== 'admin') {
+        throw new ForbiddenException('Only the meeting host or organizer can download the meeting report');
+      }
+
       const pdfBuffer = await this.botService.getMeetingReportPdf(id);
       res.set({
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="Meeting-Report-${id}.pdf"`,
       });
       res.send(pdfBuffer);
-    } catch (error) {
-      this.logger.error(`Failed to download report for meeting ${id}:`, error);
+    } catch (error: any) {
+      this.logger.error(`Failed to download report for meeting ${id}:`, error.message || error);
+      if (error instanceof ForbiddenException || error instanceof NotFoundException) {
+        return res.status(error.getStatus()).send({ message: error.message });
+      }
       res.status(500).send('Failed to generate report');
     }
   }

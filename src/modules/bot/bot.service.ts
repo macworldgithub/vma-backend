@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+﻿import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
@@ -66,8 +66,16 @@ export class BotService {
       this.logger.error('Error auto-sanitizing contaminated recurring meetings:', err.message);
     }
 
+    // CRITICAL GUARD: Only auto-deploy bot if:
+    // 1) The meeting is an internal/manual meeting (source != 'calendar'), OR
+    // 2) The user is explicitly the organizer of the calendar meeting (isOrganizer === true).
+    // NEVER auto-deploy bots to external meetings where the user is just an attendee!
     const upcomingMeetings = await this.meetingModel.find({
       meetingLink: { $exists: true, $ne: '' },
+      $or: [
+        { source: { $ne: 'calendar' } },
+        { isOrganizer: true },
+      ],
       $and: [
         {
           $or: [
@@ -102,7 +110,7 @@ export class BotService {
       }
       processedLinks.add(normalizedLink);
 
-      this.logger.log(`Auto-deploying bot for meeting: ${meeting.title} (${meeting._id})`);
+      this.logger.log(`Auto-deploying bot for hosted meeting: ${meeting.title} (${meeting._id})`);
       await this.joinMeeting(meeting);
     }
   }
@@ -220,63 +228,25 @@ export class BotService {
       return { success: false, reason: 'Bot already active or joining' };
     }
 
-    // Calculate timeout in seconds equal to scheduled meeting duration (default to 3600s/1 hour if unspecified)
-    let timeoutSeconds = 3600;
-    if (meeting.startTime && meeting.endTime) {
-      const startMs = new Date(meeting.startTime).getTime();
-      const endMs = new Date(meeting.endTime).getTime();
-      if (!isNaN(startMs) && !isNaN(endMs) && endMs > startMs) {
-        const durationSec = Math.floor((endMs - startMs) / 1000);
-        timeoutSeconds = Math.max(600, Math.min(14400, durationSec));
-      }
-    }
-
-    // The bot can be dispatched up to ~10 min before scheduled start (see
-    // checkUpcomingMeetings), so a lobby timeout based only on meeting duration
-    // can expire before the scheduled end if the host is slow to admit it.
-    // Base it on time remaining until the scheduled end instead, plus a buffer.
-    let lobbyTimeoutSeconds = Math.min(1800, timeoutSeconds);
-    if (meeting.endTime) {
-      const endMs = new Date(meeting.endTime).getTime();
-      const secondsUntilEnd = Math.floor((endMs - Date.now()) / 1000);
-      if (!isNaN(secondsUntilEnd) && secondsUntilEnd > 0) {
-        lobbyTimeoutSeconds = Math.max(lobbyTimeoutSeconds, secondsUntilEnd + 300); // +5 min buffer
-      }
-    }
-    lobbyTimeoutSeconds = Math.min(lobbyTimeoutSeconds, 14400); // 4hr hard cap
-
     try {
+      this.logger.log(`Requesting Recall bot for meeting link: ${cleanLink}`);
       const response = await firstValueFrom(
         this.httpService.post(
-          `${baseUrl}/bot`,
+          `${baseUrl}/bot/`,
           {
-            meeting_url: rawLink,
+            meeting_url: cleanLink,
             bot_name: botName,
-            metadata: { meetingId: meeting._id.toString() },
-            automatic_leave: {
-              everyone_left_timeout: { timeout: timeoutSeconds },
-              noone_joined_timeout: lobbyTimeoutSeconds,
-              waiting_room_timeout: lobbyTimeoutSeconds,
-              in_call_not_recording_timeout: Math.min(1800, timeoutSeconds)
+            transcription_options: {
+              provider: 'default',
             },
-            recording_config: {
-              transcript: {
-                provider: {
-                  recallai_streaming: {
-                    mode: 'prioritize_accuracy',
-                    language_code: 'en'
-                  }
-                }
-              }
-            }
           },
           {
             headers: {
-              'Authorization': `Token ${apiKey}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        )
+              Authorization: `Token ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
       );
 
       const botId = response.data.id;
@@ -286,7 +256,7 @@ export class BotService {
       await this.meetingModel.updateOne(
         { _id: meeting._id },
         { $set: { recallBotId: botId, botStatus: 'joining' } },
-        { runValidators: false }
+        { runValidators: false },
       );
 
       return { success: true, botId };
@@ -295,7 +265,7 @@ export class BotService {
       await this.meetingModel.updateOne(
         { _id: meeting._id, botStatus: 'joining' },
         { $set: { botStatus: 'error' } },
-        { runValidators: false }
+        { runValidators: false },
       );
       return { success: false, error: error.message };
     }
@@ -358,76 +328,71 @@ export class BotService {
 
   private async resolveRecipientEmail(meeting: any): Promise<string> {
     let emailAddress = '';
-    const userIds = [meeting.createdBy, meeting.hostId].filter(
-      (id) => id && isValidObjectId(id),
-    );
 
-    // Check CalendarToken for linked user(s)
-    if (userIds.length > 0) {
-      const tokens = await this.tokenModel.find({ userId: { $in: userIds } });
+    // Priority 1: If organizerEmail is explicitly provided, non-synthetic, and valid
+    // This ensures meeting reports for calendar meetings are ALWAYS sent to the organizer (e.g., Sarah)
+    if (this.isValidRecipientEmail(meeting.organizerEmail)) {
+      emailAddress = meeting.organizerEmail!.trim().toLowerCase();
+      this.logger.log(`Resolved recipient email from organizerEmail: ${emailAddress} for meeting ${meeting._id}`);
+      return emailAddress;
+    }
 
-      // Match meeting provider first if applicable
-      if (meeting.provider === 'microsoft') {
-        const msToken = tokens.find(
-          (t) => t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail),
-        );
-        if (msToken?.microsoftEmail) {
-          emailAddress = msToken.microsoftEmail;
-        }
-      } else if (meeting.provider === 'google') {
-        const gToken = tokens.find(
-          (t) => t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail),
-        );
-        if (gToken?.googleEmail) {
-          emailAddress = gToken.googleEmail;
+    // Priority 2: For in-app VMA meetings or meetings with a valid hostId
+    // Check hostId user first (the creator/host of the meeting)
+    if (meeting.hostId && isValidObjectId(meeting.hostId)) {
+      const hostUser = await this.userModel.findById(meeting.hostId);
+      if (hostUser && this.isValidRecipientEmail(hostUser.email)) {
+        emailAddress = hostUser.email.trim().toLowerCase();
+      } else {
+        const hostToken = await this.tokenModel.findOne({ userId: meeting.hostId });
+        if (hostToken?.microsoftEmail && this.isValidRecipientEmail(hostToken.microsoftEmail)) {
+          emailAddress = hostToken.microsoftEmail.trim().toLowerCase();
+        } else if (hostToken?.googleEmail && this.isValidRecipientEmail(hostToken.googleEmail)) {
+          emailAddress = hostToken.googleEmail.trim().toLowerCase();
         }
       }
 
-      // Check any valid connected token for the user
-      if (!emailAddress) {
-        for (const t of tokens) {
-          if (t.provider === 'microsoft' && this.isValidRecipientEmail(t.microsoftEmail)) {
-            emailAddress = t.microsoftEmail!;
-            break;
-          }
-          if (t.provider === 'google' && this.isValidRecipientEmail(t.googleEmail)) {
-            emailAddress = t.googleEmail!;
-            break;
-          }
-        }
+      if (emailAddress) {
+        this.logger.log(`Resolved recipient email from hostId (${meeting.hostId}): ${emailAddress}`);
+        return emailAddress;
       }
     }
 
-    // Check stored meeting properties
-    if (!emailAddress && this.isValidRecipientEmail(meeting.microsoftAccount)) {
-      emailAddress = meeting.microsoftAccount!;
-    }
-    if (!emailAddress && this.isValidRecipientEmail(meeting.googleAccount)) {
-      emailAddress = meeting.googleAccount!;
-    }
-
-    // Check VMA User database email
-    if (!emailAddress && userIds.length > 0) {
-      for (const uid of userIds) {
-        const user = await this.userModel.findById(uid);
-        if (user && this.isValidRecipientEmail(user.email)) {
-          emailAddress = user.email;
-          break;
+    // Priority 3: Check createdBy user
+    if (meeting.createdBy && isValidObjectId(meeting.createdBy)) {
+      const creatorUser = await this.userModel.findById(meeting.createdBy);
+      if (creatorUser && this.isValidRecipientEmail(creatorUser.email)) {
+        emailAddress = creatorUser.email.trim().toLowerCase();
+      } else {
+        const creatorToken = await this.tokenModel.findOne({ userId: meeting.createdBy });
+        if (creatorToken?.microsoftEmail && this.isValidRecipientEmail(creatorToken.microsoftEmail)) {
+          emailAddress = creatorToken.microsoftEmail.trim().toLowerCase();
+        } else if (creatorToken?.googleEmail && this.isValidRecipientEmail(creatorToken.googleEmail)) {
+          emailAddress = creatorToken.googleEmail.trim().toLowerCase();
         }
+      }
+
+      if (emailAddress) {
+        this.logger.log(`Resolved recipient email from createdBy (${meeting.createdBy}): ${emailAddress}`);
+        return emailAddress;
       }
     }
 
-    // Check string createdBy/hostId if they are direct emails
+    // Priority 4: If isOrganizer !== false, check stored provider accounts
+    if (meeting.isOrganizer !== false) {
+      if (this.isValidRecipientEmail(meeting.microsoftAccount)) {
+        emailAddress = meeting.microsoftAccount!.trim().toLowerCase();
+      } else if (this.isValidRecipientEmail(meeting.googleAccount)) {
+        emailAddress = meeting.googleAccount!.trim().toLowerCase();
+      }
+    }
+
+    // Priority 5: Check string createdBy/hostId if direct email string
     if (!emailAddress && typeof meeting.createdBy === 'string' && this.isValidRecipientEmail(meeting.createdBy)) {
-      emailAddress = meeting.createdBy;
+      emailAddress = meeting.createdBy.trim().toLowerCase();
     }
     if (!emailAddress && typeof meeting.hostId === 'string' && this.isValidRecipientEmail(meeting.hostId)) {
-      emailAddress = meeting.hostId;
-    }
-
-    // Check organizerEmail (only if valid and non-synthetic)
-    if (!emailAddress && this.isValidRecipientEmail(meeting.organizerEmail)) {
-      emailAddress = meeting.organizerEmail!;
+      emailAddress = meeting.hostId.trim().toLowerCase();
     }
 
     // Fallback
@@ -453,8 +418,8 @@ export class BotService {
     // Step 1: Retrieve the transcript object to get its pre-signed download_url
     const transcriptRes = await firstValueFrom(
       this.httpService.get(`${baseUrl}/transcript/${transcriptId}/`, {
-        headers: { 'Authorization': `Token ${apiKey}` }
-      })
+        headers: { Authorization: `Token ${apiKey}` },
+      }),
     );
 
     const downloadUrl = transcriptRes.data?.data?.download_url;
@@ -498,37 +463,26 @@ export class BotService {
       return;
     }
 
-    // Atomic guard: claim this meeting to prevent duplicate processing
-    // by concurrent cron ticks or overlapping webhook calls.
-    const claimed = await this.meetingModel.findOneAndUpdate(
-      {
-        _id: meeting._id,
-        summaryStatus: { $nin: ['processing', 'sent', 'skipped_empty_transcript'] },
-      },
-      {
-        $set: {
-          summaryStatus: 'processing',
-          summaryProcessingStartedAt: new Date(),
-        },
-      },
-      { runValidators: false },
-    );
-
-    if (!claimed) {
-      this.logger.log(
-        `Meeting ${meeting._id} is already being processed or report already sent. Skipping.`,
-      );
-      return;
-    }
-
     try {
-      this.logger.log(`Fetching transcript for bot ${botId}...`);
+      this.logger.log(`Processing transcript for Bot ${botId} on meeting ${meeting.title} (${meeting._id})`);
 
+      await this.meetingModel.updateOne(
+        { _id: meeting._id },
+        {
+          $set: {
+            summaryStatus: 'processing',
+            summaryProcessingStartedAt: new Date(),
+          },
+        },
+        { runValidators: false },
+      );
+
+      // 1. Fetch Raw Transcript
       let transcriptText = '';
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(transcriptId ?? meeting.transcriptId);
-      } catch (err: any) {
-        this.logger.warn(`Could not fetch transcript for bot ${botId}: ${err.message}`);
+        transcriptText = await this.fetchTranscriptFromRecall(transcriptId || meeting.transcriptId);
+      } catch (transcriptErr: any) {
+        this.logger.warn(`Recall transcript fetch failed: ${transcriptErr.message}. Fallback to chat/empty.`);
         transcriptText = '';
       }
 
@@ -579,38 +533,33 @@ export class BotService {
       };
       // 2. Fetch JSON Summary
       const analysisRes = await firstValueFrom(
-        this.httpService.post(`${microserviceUrl}/analyse`, payload)
+        this.httpService.post(`${microserviceUrl}/analyse`, payload),
       );
 
       const summaryData = analysisRes.data;
       // 3. Update Meeting with Summary Data
-      // Safe as a broad match — this only attaches report data, it doesn't
-      // touch botStatus/recallBotId, so it can't affect a redeployed bot's lock.
       await this.meetingModel.updateMany(
         { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
         { $set: { summaryData: { ...summaryData, transcript: transcriptText } } },
-        { runValidators: false }
+        { runValidators: false },
       );
 
       // 4. Fetch PDF Report
       const pdfRes = await firstValueFrom(
         this.httpService.post(`${microserviceUrl}/report/pdf`, payload, {
-          responseType: 'arraybuffer'
-        })
+          responseType: 'arraybuffer',
+        }),
       );
       const pdfBuffer = Buffer.from(pdfRes.data);
 
-      // 5. Determine Recipient Email Address
+      // 5. Determine Recipient Email Address (ALWAYS resolved to Organizer/Host)
       const emailAddress = await this.resolveRecipientEmail(meeting);
 
       this.logger.log(`Sending meeting report for ${meeting.title} (${meeting._id}) to: ${emailAddress}`);
       await this.mailService.sendMeetingReport(emailAddress, meeting.title, pdfBuffer);
       this.logger.log(`Finished processing transcript and sent report to ${emailAddress} for meeting ${meeting._id}`);
 
-      // 1) Always record that this email was sent, regardless of whether this
-      //    bot is still the "active" one for the meeting. Use $addToSet instead
-      //    of overwriting the array, so a later redeployed session's send
-      //    doesn't erase the record of an earlier session's send.
+      // Record summary sent
       await this.meetingModel.updateOne(
         { _id: meeting._id },
         {
@@ -624,9 +573,7 @@ export class BotService {
         { runValidators: false },
       );
 
-      // 2) Separately, release this bot's lock — but ONLY if it's still the
-      //    active bot for this meeting. If a redeploy already happened, this
-      //    is a correct, expected no-op (logged so it's visible, not silent).
+      // Release lock if this bot is still active
       const lockRelease = await this.meetingModel.updateOne(
         { _id: meeting._id, recallBotId: botId },
         { $set: { botStatus: 'none', recallBotId: null } },
@@ -634,14 +581,11 @@ export class BotService {
       );
       if (lockRelease.matchedCount === 0) {
         this.logger.log(
-          `Skipped lock release for bot ${botId} on meeting ${meeting._id} — a newer bot is already active.`,
+          `Skipped lock release for bot ${botId} on meeting ${meeting._id} - a newer bot is already active.`,
         );
       }
     } catch (error: any) {
       this.logger.error(`Error processing transcript for bot ${botId}:`, error.message);
-      // Left as a broad match intentionally — summaryStatus/summaryError are
-      // informational only and don't gate the redeploy cron, so this can't
-      // clobber a redeployed bot's lock the way botStatus/recallBotId could.
       await this.meetingModel.updateMany(
         { $or: [{ recallBotId: botId }, { _id: meeting._id }] },
         {
@@ -651,11 +595,10 @@ export class BotService {
           },
           $inc: { summaryRetryCount: 1 },
         },
-        { runValidators: false }
+        { runValidators: false },
       );
     }
   }
-
 
   async getMeetingReportPdf(meetingId: string): Promise<Buffer> {
     const meeting = await this.meetingModel.findById(meetingId);
@@ -699,8 +642,8 @@ export class BotService {
 
     const pdfRes = await firstValueFrom(
       this.httpService.post(`${microserviceUrl}/report/pdf`, payload, {
-        responseType: 'arraybuffer'
-      })
+        responseType: 'arraybuffer',
+      }),
     );
 
     return Buffer.from(pdfRes.data);
@@ -723,11 +666,11 @@ export class BotService {
           {},
           {
             headers: {
-              'Authorization': `Token ${apiKey}`,
-              'Content-Type': 'application/json'
-            }
-          }
-        )
+              Authorization: `Token ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
       );
       this.logger.log(`Successfully sent leave_call for bot ${botId}`);
     } catch (error: any) {

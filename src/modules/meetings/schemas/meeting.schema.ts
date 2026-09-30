@@ -1,4 +1,4 @@
-import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
+﻿import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 
 export enum MeetingStatus {
   SCHEDULED = 'SCHEDULED',
@@ -56,7 +56,6 @@ export class Meeting {
   @Prop({ default: 'none' })
   botStatus?: string;
 
-
   @Prop()
   roomId!: string;
 
@@ -89,6 +88,12 @@ export class Meeting {
 
   @Prop({ default: 0 })
   summaryRetryCount?: number;
+
+  @Prop({ default: true })
+  isOrganizer?: boolean;
+
+  @Prop()
+  summonedBy?: string;
 
   @Prop()
   organizerEmail?: string;
