@@ -1,4 +1,4 @@
-import { Controller, Post, Req, Headers, Logger, BadRequestException } from '@nestjs/common';
+﻿import { Controller, Post, Req, Headers, Logger, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
@@ -44,7 +44,6 @@ export class BotController {
     const botId = data.bot_id || (data.bot && data.bot.id);
     if (!botId) return { received: true };
 
-    // top of handleRecallWebhook — was: findOne({ recallBotId: botId })
     const meeting = await this.meetingModel.findOne({
       $or: [{ recallBotId: botId }, { previousBotIds: botId }],
     });
@@ -57,56 +56,89 @@ export class BotController {
     switch (payload.event) {
       case 'bot.joining_call':
       case 'bot.in_waiting_room':
-      case 'bot.in_call_recording':
-      case 'bot.in_call_not_recording':
         this.logger.log(`Bot ${botId} status changed to ${payload.event}`);
         await this.meetingModel.updateOne(
           { _id: meeting._id },
-          { $set: { botStatus: payload.event }, $setOnInsert: { botJoinedAt: new Date() } },
+          { $set: { botStatus: payload.event } },
           { runValidators: false }
         );
         break;
 
-      case 'bot.call_ended':
-        const now = new Date();
-        const stillWithinSchedule = meeting.endTime && now < new Date(meeting.endTime);
+      case 'bot.in_call_recording':
+      case 'bot.in_call_not_recording':
+        this.logger.log(`Bot ${botId} status changed to ${payload.event} — marking meeting LIVE`);
+        await this.meetingModel.updateOne(
+          { _id: meeting._id },
+          {
+            $set: { botStatus: payload.event, status: 'LIVE', botJoinedAt: new Date() },
+          },
+          { runValidators: false }
+        );
+        break;
 
-        if (stillWithinSchedule) {
+      case 'bot.call_ended': {
+        const now = new Date();
+        const botWasRecording = [
+          'bot.in_call_recording',
+          'bot.in_call_not_recording',
+          'LIVE',
+        ].includes(meeting.botStatus || '') || meeting.status === 'LIVE';
+
+        // If the bot was actually recording/in-call, treat this as the true end of the meeting.
+        // Do NOT reset to 'none' — that would cause the cron to re-deploy immediately.
+        if (botWasRecording) {
           this.logger.log(
-            `Meeting ${meeting._id} call ended before scheduled endTime — releasing bot lock so it can redeploy if the host rejoins.`
+            `Meeting ${meeting._id} ended (bot was recording). Marking ENDED and awaiting transcript.`
           );
           await this.meetingModel.updateOne(
             { _id: meeting._id, recallBotId: botId },
             {
-              $set: { botStatus: 'none', recallBotId: null, botLeftAt: now },
+              $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: now },
               $addToSet: { previousBotIds: botId },
-              $inc: { redeployCount: 1 },
             },
             { runValidators: false },
           );
         } else {
-          this.logger.log(`Meeting ended for Bot ${botId}`);
-          await this.meetingModel.updateOne(
-            { _id: meeting._id },
-            { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: now } },
-            { runValidators: false },
-          );
+          // Bot never got into the call (e.g. kicked from waiting room or brief network drop).
+          // Only allow re-deploy if still within the scheduled window.
+          const stillWithinSchedule = meeting.endTime && now < new Date(meeting.endTime);
+          if (stillWithinSchedule) {
+            this.logger.log(
+              `Meeting ${meeting._id} bot kicked before recording (waiting room). Releasing lock for possible redeploy.`
+            );
+            await this.meetingModel.updateOne(
+              { _id: meeting._id, recallBotId: botId },
+              {
+                $set: { botStatus: 'none', recallBotId: null, botLeftAt: now },
+                $addToSet: { previousBotIds: botId },
+                $inc: { redeployCount: 1 },
+              },
+              { runValidators: false },
+            );
+          } else {
+            this.logger.log(`Meeting ${meeting._id} ended (past scheduled time). Marking ENDED.`);
+            await this.meetingModel.updateOne(
+              { _id: meeting._id },
+              { $set: { status: 'ENDED', botStatus: 'call_ended', botLeftAt: now } },
+              { runValidators: false },
+            );
+          }
         }
         break;
+      }
 
       case 'bot.done':
         this.logger.log(`Bot ${botId} done. Awaiting transcript.done before processing.`);
         await this.meetingModel.updateOne(
           { _id: meeting._id },
-          { $set: { botStatus: 'bot.done', botLeftAt: new Date() } },
+          { $set: { botStatus: 'bot.done', botLeftAt: new Date(), status: 'ENDED' } },
           { runValidators: false }
         );
         break;
 
-      case 'transcript.done':
+      case 'transcript.done': {
         const transcriptId = data.transcript?.id;
         if (transcriptId) {
-          // target by meeting._id
           await this.meetingModel.updateOne(
             { _id: meeting._id },
             { $set: { transcriptId } },
@@ -117,24 +149,24 @@ export class BotController {
           this.logger.error(`Error processing transcript: ${err.message}`);
         });
         break;
+      }
 
-      case 'transcript.failed':
-        {
-          const transcriptId = data.transcript?.id;
-          this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
-          await this.meetingModel.updateOne(
-            { _id: meeting._id },
-            {
-              $set: {
-                botErrorLog: JSON.stringify(data.data || {}),
-                summaryStatus: 'failed',
-                summaryError: 'Transcript generation failed on Recall.ai',
-              },
+      case 'transcript.failed': {
+        const transcriptId = data.transcript?.id;
+        this.logger.error(`Transcript generation failed for Bot ${botId}: ${JSON.stringify(data.data)}`);
+        await this.meetingModel.updateOne(
+          { _id: meeting._id },
+          {
+            $set: {
+              botErrorLog: JSON.stringify(data.data || {}),
+              summaryStatus: 'failed',
+              summaryError: 'Transcript generation failed on Recall.ai',
             },
-            { runValidators: false }
-          );
-        }
+          },
+          { runValidators: false }
+        );
         break;
+      }
 
       default:
         this.logger.log(`Unhandled Recall.ai webhook event: ${payload.event}`);

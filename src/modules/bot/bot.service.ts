@@ -35,15 +35,16 @@ export class BotService {
     // Auto-fix any meeting records contaminated by past recurring meeting webhooks
     // (e.g. where botLeftAt is before startTime or future meetings were pre-marked as ENDED/done)
     try {
+      // Case A: Reset future meetings that were incorrectly pre-marked as ENDED/done
       await this.meetingModel.updateMany(
         {
           $or: [
-            // Case 1: Bot left before the meeting even started (signature of recurring contamination)
+            // Bot left before the meeting even started (recurring contamination)
             {
               botLeftAt: { $exists: true, $ne: null },
               $expr: { $lt: ['$botLeftAt', '$startTime'] },
             },
-            // Case 2: Future meeting (startTime in future) incorrectly marked as ENDED/done
+            // Future meeting incorrectly marked as ENDED/done
             {
               startTime: { $gt: now },
               $or: [
@@ -54,12 +55,26 @@ export class BotService {
           ],
         },
         {
-          $set: {
-            botStatus: 'none',
-            status: 'SCHEDULED',
-            recallBotId: null,
-          },
+          $set: { botStatus: 'none', status: 'SCHEDULED', recallBotId: null },
           $unset: { botLeftAt: 1, botJoinedAt: 1 },
+        },
+      );
+
+      // Case B: Auto-mark meetings as ENDED if their endTime has passed but status is still
+      // SCHEDULED or LIVE and no active bot is running. This prevents the cron from
+      // re-deploying a bot to a meeting that has already finished.
+      await this.meetingModel.updateMany(
+        {
+          endTime: { $lt: now },
+          status: { $in: ['SCHEDULED', 'LIVE'] },
+          $or: [
+            { recallBotId: null },
+            { recallBotId: { $exists: false } },
+            { botStatus: { $in: ['none', 'error', 'call_ended', 'bot.done', null, ''] } },
+          ],
+        },
+        {
+          $set: { status: 'ENDED' },
         },
       );
     } catch (err: any) {
@@ -72,6 +87,7 @@ export class BotService {
     // NEVER auto-deploy bots to external meetings where the user is just an attendee!
     const upcomingMeetings = await this.meetingModel.find({
       meetingLink: { $exists: true, $ne: '' },
+      status: { $ne: 'ENDED' },
       $or: [
         { source: { $ne: 'calendar' } },
         { isOrganizer: true },
@@ -236,9 +252,6 @@ export class BotService {
           {
             meeting_url: cleanLink,
             bot_name: botName,
-            transcription_options: {
-              provider: 'default',
-            },
           },
           {
             headers: {
