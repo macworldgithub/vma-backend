@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, isValidObjectId } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
@@ -252,6 +252,9 @@ export class BotService {
           {
             meeting_url: cleanLink,
             bot_name: botName,
+            transcription_options: {
+              provider: 'assembly_ai',
+            },
           },
           {
             headers: {
