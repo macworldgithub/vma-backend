@@ -141,13 +141,37 @@ export class BotController {
         if (transcriptId) {
           await this.meetingModel.updateOne(
             { _id: meeting._id },
-            { $set: { transcriptId } },
+            { $set: { transcriptId, transcriptSource: 'transcript.done' } },
             { runValidators: false },
           );
         }
+        this.logger.log(`transcript.done received for bot ${botId}. Processing transcript...`);
         this.botService.processTranscript(botId, meeting, transcriptId).catch((err) => {
           this.logger.error(`Error processing transcript: ${err.message}`);
         });
+        break;
+      }
+
+      case 'recording.done': {
+        // recording.done fires reliably in the Recall.ai EU region even when transcript.done
+        // does not (e.g. when transcription_options are not supported). We use this as a
+        // fallback trigger to fetch the transcript directly from the bot endpoint.
+        this.logger.log(`recording.done received for bot ${botId}. Checking if transcript still needed...`);
+        const latestMeeting = await this.meetingModel.findById(meeting._id);
+        const alreadyProcessed = ['processing', 'sent', 'skipped_empty_transcript'].includes(
+          latestMeeting?.summaryStatus || '',
+        );
+        if (!alreadyProcessed) {
+          this.logger.log(`Triggering transcript processing via bot endpoint for bot ${botId}`);
+          // Small delay to let Recall.ai finalise the recording artifact before we poll
+          setTimeout(() => {
+            this.botService.processTranscript(botId, meeting, undefined).catch((err) => {
+              this.logger.error(`Error processing transcript on recording.done: ${err.message}`);
+            });
+          }, 15000); // 15 second delay
+        } else {
+          this.logger.log(`Transcript already handled for meeting ${meeting._id}, skipping recording.done trigger.`);
+        }
         break;
       }
 

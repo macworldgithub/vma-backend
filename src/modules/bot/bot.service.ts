@@ -177,7 +177,7 @@ export class BotService {
           `Auto-retrying report processing for meeting: ${meeting.title} (${meeting._id}), attempt #${(meeting.summaryRetryCount || 0) + 1}`,
         );
 
-        await this.processTranscript(effectiveBotId, meeting, meeting.transcriptId);
+        await this.processTranscript(effectiveBotId, meeting, meeting.transcriptId || undefined);
       }
     } catch (err: any) {
       this.logger.error('Error during auto-retry of meeting reports:', err?.message || err);
@@ -416,56 +416,74 @@ export class BotService {
     return emailAddress;
   }
 
-  private async fetchTranscriptFromRecall(transcriptId?: string): Promise<string> {
+  private async fetchTranscriptFromRecall(transcriptId?: string, botId?: string): Promise<string> {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
 
     if (!apiKey || !baseUrl) {
       throw new InternalServerErrorException('Recall API config missing');
     }
-    if (!transcriptId) {
-      this.logger.warn('No transcript ID provided; cannot fetch transcript.');
-      return 'Transcript could not be retrieved from Recall.ai API.';
+
+    const parseSegments = (segments: any[]): string => {
+      if (!Array.isArray(segments) || segments.length === 0) return '';
+      return segments
+        .map((segment: any) => {
+          const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
+          const text = Array.isArray(segment.words)
+            ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
+            : (segment.text || '');
+          const startTimeRaw = segment.start_time ?? (segment.words?.[0]?.start_time ?? 0);
+          const minutes = Math.floor(startTimeRaw / 60);
+          const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
+          return `[${minutes}:${seconds}] ${speaker}: ${text.trim()}`;
+        })
+        .filter((line: string) => !line.endsWith(': '))
+        .join('\n');
+    };
+
+    // Path A: Fetch via transcript ID (pre-signed download URL — used when transcript.done fires)
+    if (transcriptId) {
+      try {
+        const transcriptRes = await firstValueFrom(
+          this.httpService.get(`${baseUrl}/transcript/${transcriptId}/`, {
+            headers: { Authorization: `Token ${apiKey}` },
+          }),
+        );
+        const downloadUrl = transcriptRes.data?.data?.download_url;
+        if (downloadUrl) {
+          const segmentsRes = await firstValueFrom(this.httpService.get(downloadUrl));
+          const result = parseSegments(segmentsRes.data);
+          if (result) return result;
+        }
+        this.logger.warn(`No download_url on transcript ${transcriptId}, falling back to bot endpoint.`);
+      } catch (err: any) {
+        this.logger.warn(`Transcript ID fetch failed: ${err.message}. Falling back to bot endpoint.`);
+      }
     }
 
-    // Step 1: Retrieve the transcript object to get its pre-signed download_url
-    const transcriptRes = await firstValueFrom(
-      this.httpService.get(`${baseUrl}/transcript/${transcriptId}/`, {
-        headers: { Authorization: `Token ${apiKey}` },
-      }),
-    );
-
-    const downloadUrl = transcriptRes.data?.data?.download_url;
-    if (!downloadUrl) {
-      this.logger.warn(`No download_url on transcript ${transcriptId}`);
-      return 'Transcript could not be retrieved from Recall.ai API.';
+    // Path B: Fetch directly from bot transcript endpoint (works in EU without transcript.done)
+    // This is the primary path when transcript.done never fires (e.g. Recall.ai EU region default)
+    if (botId) {
+      try {
+        this.logger.log(`Fetching transcript via bot endpoint for bot ${botId}`);
+        const botTranscriptRes = await firstValueFrom(
+          this.httpService.get(`${baseUrl}/bot/${botId}/transcript/`, {
+            headers: { Authorization: `Token ${apiKey}` },
+          }),
+        );
+        const segments = botTranscriptRes.data?.results || botTranscriptRes.data;
+        const result = parseSegments(Array.isArray(segments) ? segments : []);
+        if (result) return result;
+        this.logger.warn(`Bot transcript endpoint returned empty segments for bot ${botId}`);
+      } catch (err: any) {
+        this.logger.warn(`Bot transcript endpoint failed for bot ${botId}: ${err.message}`);
+      }
     }
 
-    // Step 2: Fetch the actual transcript segments (pre-signed URL, no auth header needed)
-    const segmentsRes = await firstValueFrom(this.httpService.get(downloadUrl));
-    const segments = segmentsRes.data;
-
-    if (!Array.isArray(segments)) {
-      return 'Transcript could not be retrieved from Recall.ai API.';
+    if (!transcriptId && !botId) {
+      this.logger.warn('No transcript ID or bot ID provided; cannot fetch transcript.');
     }
-
-    const lines = segments
-      .map((segment: any) => {
-        const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
-        const text = Array.isArray(segment.words)
-          ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
-          : (segment.text || '');
-
-        const startTimeRaw = segment.start_time ?? (segment.words?.[0]?.start_time ?? 0);
-        const minutes = Math.floor(startTimeRaw / 60);
-        const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
-        const timestamp = `${minutes}:${seconds}`;
-
-        return `[${timestamp}] ${speaker}: ${text.trim()}`;
-      })
-      .filter((line: string) => !line.endsWith(': '));
-
-    return lines.join('\n');
+    return 'Transcript could not be retrieved from Recall.ai API.';
   }
 
   async processTranscript(botId: string, meeting: any, transcriptId?: string) {
@@ -493,7 +511,7 @@ export class BotService {
       // 1. Fetch Raw Transcript
       let transcriptText = '';
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(transcriptId || meeting.transcriptId);
+        transcriptText = await this.fetchTranscriptFromRecall(transcriptId || meeting.transcriptId, botId);
       } catch (transcriptErr: any) {
         this.logger.warn(`Recall transcript fetch failed: ${transcriptErr.message}. Fallback to chat/empty.`);
         transcriptText = '';
