@@ -252,8 +252,17 @@ export class BotService {
           {
             meeting_url: cleanLink,
             bot_name: botName,
-            transcription_options: {
-              provider: 'meeting_captions',
+            recording_config: {
+              transcript: {
+                provider: {
+                  recallai_streaming: {
+                    mode: 'prioritize_accuracy',
+                  },
+                },
+                diarization: {
+                  use_separate_streams_when_available: true,
+                },
+              },
             },
           },
           {
@@ -431,11 +440,15 @@ export class BotService {
       if (!Array.isArray(segments) || segments.length === 0) return '';
       return segments
         .map((segment: any) => {
-          const speaker = segment.participant?.name || segment.speaker || segment.name || 'Unknown';
+          const speaker = segment.participant?.name || segment.speaker || segment.name || 'Speaker';
           const text = Array.isArray(segment.words)
             ? segment.words.map((w: any) => w.text || w.word || '').join(' ')
             : (segment.text || '');
-          const startTimeRaw = segment.start_time ?? (segment.words?.[0]?.start_time ?? 0);
+          const startTimeRaw =
+            segment.start_time ??
+            segment.words?.[0]?.start_timestamp?.relative ??
+            segment.words?.[0]?.start_time ??
+            0;
           const minutes = Math.floor(startTimeRaw / 60);
           const seconds = Math.floor(startTimeRaw % 60).toString().padStart(2, '0');
           return `[${minutes}:${seconds}] ${speaker}: ${text.trim()}`;
@@ -444,7 +457,18 @@ export class BotService {
         .join('\n');
     };
 
-    // Path A: Fetch via transcript ID (pre-signed download URL — used when transcript.done fires)
+    const fetchFromDownloadUrl = async (downloadUrl: string): Promise<string | null> => {
+      try {
+        const segmentsRes = await firstValueFrom(this.httpService.get(downloadUrl));
+        const result = parseSegments(segmentsRes.data);
+        if (result && result.trim().length > 0) return result;
+      } catch (err: any) {
+        this.logger.warn(`Failed to fetch from transcript download URL: ${err.message}`);
+      }
+      return null;
+    };
+
+    // Path A: Fetch via transcript ID (pre-signed download URL — used when transcript.done fires or async transcript completed)
     if (transcriptId) {
       try {
         const transcriptRes = await firstValueFrom(
@@ -454,21 +478,95 @@ export class BotService {
         );
         const downloadUrl = transcriptRes.data?.data?.download_url;
         if (downloadUrl) {
-          const segmentsRes = await firstValueFrom(this.httpService.get(downloadUrl));
-          const result = parseSegments(segmentsRes.data);
+          const result = await fetchFromDownloadUrl(downloadUrl);
           if (result) return result;
         }
-        this.logger.warn(`No download_url on transcript ${transcriptId}, falling back to bot endpoint.`);
+        this.logger.warn(`No download_url on transcript ${transcriptId}, checking bot recordings.`);
       } catch (err: any) {
-        this.logger.warn(`Transcript ID fetch failed: ${err.message}. Falling back to bot endpoint.`);
+        this.logger.warn(`Transcript ID fetch failed: ${err.message}. Checking bot recordings.`);
       }
     }
 
-    // Path B: Fetch directly from bot transcript endpoint (works in EU without transcript.done)
-    // This is the primary path when transcript.done never fires (e.g. Recall.ai EU region default)
+    // Path B: Fetch from bot details and recordings
     if (botId) {
       try {
-        this.logger.log(`Fetching transcript via bot endpoint for bot ${botId}`);
+        this.logger.log(`Fetching bot details for bot ${botId}`);
+        const botRes = await firstValueFrom(
+          this.httpService.get(`${baseUrl}/bot/${botId}/`, {
+            headers: { Authorization: `Token ${apiKey}` },
+          }),
+        );
+        const botData = botRes.data;
+        const recordings = botData?.recordings || [];
+
+        // Check if any recording already has transcript media_shortcut
+        for (const recording of recordings) {
+          const downloadUrl = recording.media_shortcuts?.transcript?.data?.download_url;
+          if (downloadUrl) {
+            this.logger.log(`Found transcript download URL in bot recordings for bot ${botId}`);
+            const result = await fetchFromDownloadUrl(downloadUrl);
+            if (result) return result;
+          }
+        }
+
+        // If recording exists but no transcript ready yet, trigger async transcript creation
+        if (recordings.length > 0 && recordings[0]?.id) {
+          const recordingId = recordings[0].id;
+          this.logger.log(`Triggering async transcript creation for recording ${recordingId} on bot ${botId}`);
+          try {
+            const createRes = await firstValueFrom(
+              this.httpService.post(
+                `${baseUrl}/recording/${recordingId}/create_transcript/`,
+                {
+                  provider: {
+                    recallai_async: {
+                      language_code: 'auto',
+                    },
+                  },
+                },
+                {
+                  headers: {
+                    Authorization: `Token ${apiKey}`,
+                    'Content-Type': 'application/json',
+                  },
+                },
+              ),
+            );
+
+            const newTranscriptId = createRes.data?.id;
+            if (newTranscriptId) {
+              this.logger.log(`Async transcript ${newTranscriptId} requested. Polling for completion...`);
+              for (let i = 0; i < 6; i++) {
+                await new Promise((resolve) => setTimeout(resolve, 4000));
+                try {
+                  const checkRes = await firstValueFrom(
+                    this.httpService.get(`${baseUrl}/transcript/${newTranscriptId}/`, {
+                      headers: { Authorization: `Token ${apiKey}` },
+                    }),
+                  );
+                  const status = checkRes.data?.status?.code;
+                  const newDownloadUrl = checkRes.data?.data?.download_url;
+                  if (status === 'done' && newDownloadUrl) {
+                    this.logger.log(`Async transcript ${newTranscriptId} completed successfully.`);
+                    const result = await fetchFromDownloadUrl(newDownloadUrl);
+                    if (result) return result;
+                    break;
+                  } else if (status === 'failed') {
+                    this.logger.warn(`Async transcript ${newTranscriptId} failed.`);
+                    break;
+                  }
+                } catch (pollErr: any) {
+                  this.logger.warn(`Error polling transcript ${newTranscriptId}: ${pollErr.message}`);
+                }
+              }
+            }
+          } catch (createErr: any) {
+            this.logger.warn(`Failed to request async transcript for recording ${recordingId}: ${createErr.message}`);
+          }
+        }
+
+        // Path C: Fallback to bot transcript endpoint
+        this.logger.log(`Attempting fallback to bot transcript endpoint for bot ${botId}`);
         const botTranscriptRes = await firstValueFrom(
           this.httpService.get(`${baseUrl}/bot/${botId}/transcript/`, {
             headers: { Authorization: `Token ${apiKey}` },
@@ -477,9 +575,8 @@ export class BotService {
         const segments = botTranscriptRes.data?.results || botTranscriptRes.data;
         const result = parseSegments(Array.isArray(segments) ? segments : []);
         if (result) return result;
-        this.logger.warn(`Bot transcript endpoint returned empty segments for bot ${botId}`);
       } catch (err: any) {
-        this.logger.warn(`Bot transcript endpoint failed for bot ${botId}: ${err.message}`);
+        this.logger.warn(`Bot details/transcript lookup failed for bot ${botId}: ${err.message}`);
       }
     }
 

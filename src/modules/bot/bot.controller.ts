@@ -1,4 +1,4 @@
-﻿import { Controller, Post, Req, Headers, Logger, BadRequestException } from '@nestjs/common';
+import { Controller, Post, Req, Headers, Logger, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Meeting } from '../meetings/schemas/meeting.schema';
@@ -137,7 +137,7 @@ export class BotController {
         break;
 
       case 'transcript.done': {
-        const transcriptId = data.transcript?.id;
+        const transcriptId = data.transcript?.id || data.data?.transcript_id || data.data?.id;
         if (transcriptId) {
           await this.meetingModel.updateOne(
             { _id: meeting._id },
