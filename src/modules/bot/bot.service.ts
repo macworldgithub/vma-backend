@@ -253,7 +253,7 @@ export class BotService {
             meeting_url: cleanLink,
             bot_name: botName,
             transcription_options: {
-              provider: 'assembly_ai',
+              provider: 'meeting_captions',
             },
           },
           {
