@@ -14,6 +14,8 @@ import { ChatService } from '../realtime/services/chat.service';
 @Injectable()
 export class BotService {
   private readonly logger = new Logger(BotService.name);
+  private lastCreateTranscriptCallTime = 0;
+  private readonly MIN_CREATE_TRANSCRIPT_INTERVAL_MS = 15000;
 
   constructor(
     @InjectModel(Meeting.name) private meetingModel: Model<Meeting>,
@@ -135,32 +137,37 @@ export class BotService {
   async retryPendingOrFailedReports() {
     this.logger.debug('Checking for pending or failed meeting reports to auto-retry...');
     try {
-      const candidates = await this.meetingModel.find({
-        $and: [
-          {
-            $or: [
-              { summaryStatus: { $in: ['failed', 'none', 'pending'] } },
-              { summaryStatus: { $exists: false } },
-              {
-                summaryStatus: 'processing',
-                summaryProcessingStartedAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
-              },
-            ],
-          },
-          {
-            $or: [
-              { transcriptId: { $exists: true, $nin: [null, ''] } },
-              { recallBotId: { $exists: true, $nin: [null, ''] } },
-            ],
-          },
-          {
-            $or: [
-              { summaryRetryCount: { $exists: false } },
-              { summaryRetryCount: { $lt: 5 } },
-            ],
-          },
-        ],
-      });
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const candidates = await this.meetingModel
+        .find({
+          updatedAt: { $gte: twentyFourHoursAgo },
+          $and: [
+            {
+              $or: [
+                { summaryStatus: { $in: ['failed', 'none', 'pending'] } },
+                { summaryStatus: { $exists: false } },
+                {
+                  summaryStatus: 'processing',
+                  summaryProcessingStartedAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) },
+                },
+              ],
+            },
+            {
+              $or: [
+                { transcriptId: { $exists: true, $nin: [null, ''] } },
+                { recallBotId: { $exists: true, $nin: [null, ''] } },
+              ],
+            },
+            {
+              $or: [
+                { summaryRetryCount: { $exists: false } },
+                { summaryRetryCount: { $lt: 5 } },
+              ],
+            },
+          ],
+        })
+        .sort({ updatedAt: -1 })
+        .limit(3);
 
       if (!candidates || candidates.length === 0) return;
 
@@ -178,6 +185,8 @@ export class BotService {
         );
 
         await this.processTranscript(effectiveBotId, meeting, meeting.transcriptId || undefined);
+        // Space out retries to stay well within Recall.ai rate limits
+        await new Promise((resolve) => setTimeout(resolve, 15000));
       }
     } catch (err: any) {
       this.logger.error('Error during auto-retry of meeting reports:', err?.message || err);
@@ -428,7 +437,11 @@ export class BotService {
     return emailAddress;
   }
 
-  private async fetchTranscriptFromRecall(transcriptId?: string, botId?: string): Promise<string> {
+  private async fetchTranscriptFromRecall(
+    transcriptId?: string,
+    botId?: string,
+    meetingId?: string,
+  ): Promise<string> {
     const apiKey = this.configService.get<string>('RECALL_API_KEY');
     const baseUrl = this.configService.get<string>('RECALL_BASE_URL');
 
@@ -468,7 +481,7 @@ export class BotService {
       return null;
     };
 
-    // Path A: Fetch via transcript ID (pre-signed download URL — used when transcript.done fires or async transcript completed)
+    // Path 1: Fetch via transcript ID (pre-signed download URL — used when transcript.done fires or async transcript completed)
     if (transcriptId) {
       try {
         const transcriptRes = await firstValueFrom(
@@ -481,14 +494,33 @@ export class BotService {
           const result = await fetchFromDownloadUrl(downloadUrl);
           if (result) return result;
         }
-        this.logger.warn(`No download_url on transcript ${transcriptId}, checking bot recordings.`);
+        this.logger.warn(`No download_url on transcript ${transcriptId}, checking bot streaming transcript.`);
       } catch (err: any) {
-        this.logger.warn(`Transcript ID fetch failed: ${err.message}. Checking bot recordings.`);
+        this.logger.warn(`Transcript ID fetch failed: ${err.message}. Checking bot streaming transcript.`);
       }
     }
 
-    // Path B: Fetch from bot details and recordings
+    // Path 2: Bot Live Streaming Transcript
+    // Bots are summoned with recallai_streaming, so Recall already records and stores the full transcript live!
     if (botId) {
+      try {
+        this.logger.log(`Checking bot streaming transcript endpoint for bot ${botId}`);
+        const botTranscriptRes = await firstValueFrom(
+          this.httpService.get(`${baseUrl}/bot/${botId}/transcript/`, {
+            headers: { Authorization: `Token ${apiKey}` },
+          }),
+        );
+        const segments = botTranscriptRes.data?.results || botTranscriptRes.data;
+        const result = parseSegments(Array.isArray(segments) ? segments : []);
+        if (result && result.trim().length > 0) {
+          this.logger.log(`Found complete streaming transcript for bot ${botId}`);
+          return result;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Bot streaming transcript lookup failed for bot ${botId}: ${err.message}`);
+      }
+
+      // Path 3: Fetch from bot details and recording media shortcuts
       try {
         this.logger.log(`Fetching bot details for bot ${botId}`);
         const botRes = await firstValueFrom(
@@ -509,32 +541,113 @@ export class BotService {
           }
         }
 
-        // If recording exists but no transcript ready yet, trigger async transcript creation
+        // Path 4: If recording exists, check if an async transcript is ALREADY created or in-progress
         if (recordings.length > 0 && recordings[0]?.id) {
           const recordingId = recordings[0].id;
+
+          try {
+            const listRes = await firstValueFrom(
+              this.httpService.get(`${baseUrl}/transcript?recording_id=${recordingId}`, {
+                headers: { Authorization: `Token ${apiKey}` },
+              }),
+            );
+            const existingTranscripts = listRes.data?.results || listRes.data || [];
+            if (Array.isArray(existingTranscripts) && existingTranscripts.length > 0) {
+              const latestTranscript = existingTranscripts[0];
+              const tId = latestTranscript.id;
+              const downloadUrl = latestTranscript.data?.download_url;
+              if (latestTranscript.status?.code === 'done' && downloadUrl) {
+                this.logger.log(`Found existing completed transcript ${tId} for recording ${recordingId}`);
+                const result = await fetchFromDownloadUrl(downloadUrl);
+                if (result) {
+                  if (meetingId && tId) {
+                    await this.meetingModel.updateOne({ _id: meetingId }, { $set: { transcriptId: tId } });
+                  }
+                  return result;
+                }
+              } else if (latestTranscript.status?.code === 'processing') {
+                this.logger.log(`Async transcript ${tId} is already processing for recording ${recordingId}. Skipping creation.`);
+                if (meetingId && tId) {
+                  await this.meetingModel.updateOne({ _id: meetingId }, { $set: { transcriptId: tId } });
+                }
+                return 'Transcript is currently processing on Recall.ai.';
+              }
+            }
+          } catch (listErr: any) {
+            this.logger.warn(`Could not check existing transcripts for recording ${recordingId}: ${listErr.message}`);
+          }
+
+          // Path 5: Trigger async transcript creation ONLY as last resort, with rate-limiting & backoff
           this.logger.log(`Triggering async transcript creation for recording ${recordingId} on bot ${botId}`);
           try {
-            const createRes = await firstValueFrom(
-              this.httpService.post(
-                `${baseUrl}/recording/${recordingId}/create_transcript/`,
-                {
-                  provider: {
-                    recallai_async: {
-                      language_code: 'auto',
+            // Enforce minimum 15s spacing between create_transcript requests
+            const now = Date.now();
+            const elapsed = now - this.lastCreateTranscriptCallTime;
+            if (elapsed < this.MIN_CREATE_TRANSCRIPT_INTERVAL_MS) {
+              const waitMs = this.MIN_CREATE_TRANSCRIPT_INTERVAL_MS - elapsed;
+              this.logger.log(`Rate-limit spacing: Waiting ${Math.round(waitMs / 1000)}s before calling create_transcript...`);
+              await new Promise((resolve) => setTimeout(resolve, waitMs));
+            }
+            this.lastCreateTranscriptCallTime = Date.now();
+
+            let createRes: any;
+            try {
+              createRes = await firstValueFrom(
+                this.httpService.post(
+                  `${baseUrl}/recording/${recordingId}/create_transcript/`,
+                  {
+                    provider: {
+                      recallai_async: {
+                        language_code: 'auto',
+                      },
                     },
                   },
-                },
-                {
-                  headers: {
-                    Authorization: `Token ${apiKey}`,
-                    'Content-Type': 'application/json',
+                  {
+                    headers: {
+                      Authorization: `Token ${apiKey}`,
+                      'Content-Type': 'application/json',
+                    },
                   },
-                },
-              ),
-            );
+                ),
+              );
+            } catch (err: any) {
+              if (err?.response?.status === 429) {
+                this.logger.warn(`Rate limit 429 hit on create_transcript. Backing off for 60 seconds...`);
+                await new Promise((resolve) => setTimeout(resolve, 60000));
+                this.lastCreateTranscriptCallTime = Date.now();
+                createRes = await firstValueFrom(
+                  this.httpService.post(
+                    `${baseUrl}/recording/${recordingId}/create_transcript/`,
+                    {
+                      provider: {
+                        recallai_async: {
+                          language_code: 'auto',
+                        },
+                      },
+                    },
+                    {
+                      headers: {
+                        Authorization: `Token ${apiKey}`,
+                        'Content-Type': 'application/json',
+                      },
+                    },
+                  ),
+                );
+              } else {
+                throw err;
+              }
+            }
 
-            const newTranscriptId = createRes.data?.id;
+            const newTranscriptId = createRes?.data?.id;
             if (newTranscriptId) {
+              if (meetingId) {
+                await this.meetingModel.updateOne(
+                  { _id: meetingId },
+                  { $set: { transcriptId: newTranscriptId } },
+                  { runValidators: false },
+                );
+              }
+
               this.logger.log(`Async transcript ${newTranscriptId} requested. Polling for completion...`);
               for (let i = 0; i < 6; i++) {
                 await new Promise((resolve) => setTimeout(resolve, 4000));
@@ -564,19 +677,8 @@ export class BotService {
             this.logger.warn(`Failed to request async transcript for recording ${recordingId}: ${createErr.message}`);
           }
         }
-
-        // Path C: Fallback to bot transcript endpoint
-        this.logger.log(`Attempting fallback to bot transcript endpoint for bot ${botId}`);
-        const botTranscriptRes = await firstValueFrom(
-          this.httpService.get(`${baseUrl}/bot/${botId}/transcript/`, {
-            headers: { Authorization: `Token ${apiKey}` },
-          }),
-        );
-        const segments = botTranscriptRes.data?.results || botTranscriptRes.data;
-        const result = parseSegments(Array.isArray(segments) ? segments : []);
-        if (result) return result;
       } catch (err: any) {
-        this.logger.warn(`Bot details/transcript lookup failed for bot ${botId}: ${err.message}`);
+        this.logger.warn(`Bot details lookup failed for bot ${botId}: ${err.message}`);
       }
     }
 
@@ -597,6 +699,15 @@ export class BotService {
     try {
       this.logger.log(`Processing transcript for Bot ${botId} on meeting ${meeting.title} (${meeting._id})`);
 
+      // Guard against race conditions: abort if already finalized
+      const currentMeeting = await this.meetingModel.findById(meeting._id);
+      if (['sent', 'skipped_empty_transcript'].includes(currentMeeting?.summaryStatus || '')) {
+        this.logger.log(
+          `Meeting ${meeting._id} transcript already finalized (${currentMeeting?.summaryStatus}). Skipping duplicate processing.`,
+        );
+        return;
+      }
+
       await this.meetingModel.updateOne(
         { _id: meeting._id },
         {
@@ -611,7 +722,11 @@ export class BotService {
       // 1. Fetch Raw Transcript
       let transcriptText = '';
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(transcriptId || meeting.transcriptId, botId);
+        transcriptText = await this.fetchTranscriptFromRecall(
+          transcriptId || meeting.transcriptId,
+          botId,
+          meeting._id?.toString(),
+        );
       } catch (transcriptErr: any) {
         this.logger.warn(`Recall transcript fetch failed: ${transcriptErr.message}. Fallback to chat/empty.`);
         transcriptText = '';
@@ -744,7 +859,11 @@ export class BotService {
     // Otherwise try fetching directly from Recall if active/available
     else if (meeting.transcriptId || meeting.recallBotId) {
       try {
-        transcriptText = await this.fetchTranscriptFromRecall(meeting.transcriptId || meeting.recallBotId);
+        transcriptText = await this.fetchTranscriptFromRecall(
+          meeting.transcriptId,
+          meeting.recallBotId,
+          meeting._id?.toString(),
+        );
       } catch (err: any) {
         this.logger.warn(`Could not fetch transcript from Recall: ${err.message}`);
       }

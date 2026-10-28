@@ -162,12 +162,19 @@ export class BotController {
           latestMeeting?.summaryStatus || '',
         );
         if (!alreadyProcessed) {
-          this.logger.log(`Triggering transcript processing via bot endpoint for bot ${botId}`);
+          this.logger.log(`Scheduling transcript processing via bot endpoint for bot ${botId} in 15s`);
           // Small delay to let Recall.ai finalise the recording artifact before we poll
-          setTimeout(() => {
-            this.botService.processTranscript(botId, meeting, undefined).catch((err) => {
+          setTimeout(async () => {
+            try {
+              const freshMeeting = await this.meetingModel.findById(meeting._id);
+              if (['processing', 'sent', 'skipped_empty_transcript'].includes(freshMeeting?.summaryStatus || '')) {
+                this.logger.log(`Transcript already being processed or completed for meeting ${meeting._id}, skipping recording.done trigger.`);
+                return;
+              }
+              await this.botService.processTranscript(botId, freshMeeting || meeting, undefined);
+            } catch (err: any) {
               this.logger.error(`Error processing transcript on recording.done: ${err.message}`);
-            });
+            }
           }, 15000); // 15 second delay
         } else {
           this.logger.log(`Transcript already handled for meeting ${meeting._id}, skipping recording.done trigger.`);
